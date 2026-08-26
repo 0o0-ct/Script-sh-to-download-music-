@@ -835,6 +835,10 @@ menu_album_layout() {
     cfg_save
 }
 
+album_layout_label() {
+    [[ "$ALBUM_LAYOUT" == "split" ]] && printf '%s' 'Carpeta por álbum' || printf '%s' 'Una sola carpeta'
+}
+
 menu_song_layout() {
     clear
     echo -e "${BOLD}${CYAN}══ Organización de canciones individuales ══${NC}\n"

@@ -358,7 +358,9 @@ detect_url_type() {
 
     # Primero intentamos URL como elemento único. Esto evita que una canción
     # que trae un parámetro &list= sea confundida con una playlist completa.
-    json="$(yt-dlp "${AUTH_ARGS[@]}" --dump-single-json --skip-download --no-warnings --no-playlist "$url" 2>/dev/null || true)"
+    # Se agrega un timeout de 15s para evitar que yt-dlp se quede congelado
+    # esperando resolver metadatos o captchas cuando es una playlist larga.
+    json="$(timeout 15 yt-dlp "${AUTH_ARGS[@]}" --dump-single-json --skip-download --no-warnings --no-playlist "$url" 2>/dev/null || true)"
 
     if [[ -n "$json" ]]; then
         local detected_single
@@ -381,8 +383,9 @@ PYEOF
         fi
     fi
 
-    # Si no era un elemento único, intentamos la URL como colección.
-    json="$(yt-dlp "${AUTH_ARGS[@]}" --dump-single-json --skip-download --no-warnings --playlist-items 1 "$url" 2>/dev/null || true)"
+    # Si no era un elemento único o dio timeout, intentamos la URL como colección.
+    # También con timeout para prevenir bloqueos similares.
+    json="$(timeout 15 yt-dlp "${AUTH_ARGS[@]}" --dump-single-json --skip-download --no-warnings --playlist-items 1 "$url" 2>/dev/null || true)"
     [[ -z "$json" ]] && return 1
 
     local detected

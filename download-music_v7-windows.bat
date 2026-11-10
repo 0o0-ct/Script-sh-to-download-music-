@@ -698,18 +698,18 @@ function Invoke-DownloadMenu {
         switch ($typeMode) {
             'song' {
                 $plFlag = '--no-playlist'
-                $outTpl = $destT + '%(title)s [%(id)s].%(ext)s'
+                $outTpl = $destT + '%(title)s.%(ext)s'
             }
             'playlist' {
                 $plFlag = '--yes-playlist'
-                $outTpl = $destT + '%(playlist_title)s/%(playlist_index)03d - %(title)s [%(id)s].%(ext)s'
+                $outTpl = $destT + '%(playlist_title)s/%(playlist_index)03d - %(title)s.%(ext)s'
             }
             'album' {
                 $plFlag = '--yes-playlist'
                 if ($ALBUM_LAYOUT -eq 'single') {
-                    $outTpl = $destT + '%(title)s [%(id)s].%(ext)s'
+                    $outTpl = $destT + '%(title)s.%(ext)s'
                 } else {
-                    $outTpl = $destT + '%(album,playlist_title)s/%(playlist_index)02d - %(title)s [%(id)s].%(ext)s'
+                    $outTpl = $destT + '%(album,playlist_title)s/%(playlist_index)02d - %(title)s.%(ext)s'
                 }
             }
         }
@@ -766,8 +766,8 @@ function Invoke-DownloadMenu {
 
             # Los workers reciben URLs sueltas: se fija la subcarpeta con el nombre detectado
             $safeTitle = (ConvertTo-SafeName $DET_TITLE).Replace('%', '%%')
-            $wOutTpl = if ($safeTitle) { $destT + $safeTitle + '/%(title)s [%(id)s].%(ext)s' }
-                       else            { $destT + '%(title)s [%(id)s].%(ext)s' }
+            $wOutTpl = if ($safeTitle) { $destT + $safeTitle + '/%(title)s.%(ext)s' }
+                       else            { $destT + '%(title)s.%(ext)s' }
 
             $wBase = @('--no-playlist') + $flags + @('--no-progress', '--quiet', '-o', $wOutTpl)
 

@@ -32,6 +32,26 @@ function Get-SafeName {
     return $safe
 }
 
+function Select-DownloadFolder {
+    try {
+        Add-Type -AssemblyName System.Windows.Forms | Out-Null
+    } catch {
+        Write-Host "No se pudo abrir el selector de carpeta en este sistema." -ForegroundColor Red
+        return $null
+    }
+
+    $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+    $dialog.Description = 'Selecciona la carpeta donde guardar la descarga'
+    $dialog.SelectedPath = $DownloadsDir
+    $dialog.ShowNewFolderButton = $true
+
+    if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        return $dialog.SelectedPath
+    }
+
+    return $null
+}
+
 function Install-Dependency {
     param(
         [string]$CommandName,
@@ -269,11 +289,13 @@ function Show-DownloadMenu {
         if ($global:DetectedTitle) { Write-Host "Nombre: $($global:DetectedTitle)" }
         if ($global:DetectedCount) { Write-Host "Elementos: $($global:DetectedCount)" }
 
-        $folderInput = Read-Host "Carpeta destino (Enter = Music)"
-        if ([string]::IsNullOrWhiteSpace($folderInput)) { $folderInput = 'Music' }
-        $folderName = Get-SafeName $folderInput
-        $dest = Join-Path $DownloadsDir $folderName
-        New-Item -ItemType Directory -Force -Path $dest | Out-Null
+        Write-Host "Abriendo selector de carpeta..." -ForegroundColor Cyan
+        $dest = Select-DownloadFolder
+        if (-not $dest) {
+            Write-Host "Selección cancelada. No se inició la descarga." -ForegroundColor Yellow
+            Start-Sleep -Seconds 2
+            return
+        }
 
         $archivePath = Join-Path $dest '.otterrip_archive'
 
@@ -352,7 +374,6 @@ function Show-DownloadMenu {
         }
 
         Write-Host "`nReparando metadatos..." -ForegroundColor Yellow
-        $mp3Command = @('python', '-c', 'import sys; import os; from pathlib import Path; p=Path(sys.argv[1]); files=list(p.rglob("*.mp3"))+list(p.rglob("*.m4a"))+list(p.rglob("*.flac")); print(len(files))', $dest)
         if ($exitCode -eq 0) {
             Write-Host "Proceso completado." -ForegroundColor Green
         } else {

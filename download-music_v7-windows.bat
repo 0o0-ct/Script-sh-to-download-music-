@@ -1,8 +1,8 @@
 @echo off
 setlocal
-title OtterRip v5
+title OtterRip v6.1
 REM ==============================================================
-REM  OtterRip v5 - archivo .bat de un solo fichero
+REM  OtterRip v6.1 - archivo .bat de un solo fichero
 REM  Este .bat contiene el programa (PowerShell) incrustado debajo
 REM  de la linea marcadora. Al ejecutarlo se extrae a un .ps1
 REM  temporal y se lanza con -STA (necesario para el selector de
@@ -20,9 +20,10 @@ if not "%RC%"=="0" pause
 exit /b %RC%
 #__OTTERRIP_PS1__
 # ═══════════════════════════════════════════════════════════════
-#  OtterRip v5 — Descargador de audio · Windows (PowerShell)
+#  OtterRip v6.1 — Descargador de audio + Letras (LRCLib API) · Windows
 #  + Descargas paralelas (job pool)
 #  + Selector de carpeta de destino (ventana de Windows)
+#  + Búsqueda e incrustación de letras vía lrclib.net (+ metabuscador)
 #  (versión .bat: este bloque se ejecuta desde OtterRip.bat)
 # ═══════════════════════════════════════════════════════════════
 
@@ -42,6 +43,7 @@ try {
 } catch {}
 $env:PYTHONUTF8       = '1'
 $env:PYTHONIOENCODING = 'utf-8'
+$env:PYTHONUNBUFFERED = '1'
 
 # Carpeta base = donde está el .bat (el .bat la pasa en OTTERRIP_HOME)
 $BASE_DIR = if ($env:OTTERRIP_HOME) { $env:OTTERRIP_HOME } elseif ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
@@ -63,6 +65,11 @@ $YTDLP         = $null
 $PY_EXE        = $null
 $PY_ARGS       = @()
 $HAS_MUTAGEN   = $false
+$FETCH_LYRICS  = $true      # Activar/desactivar búsqueda de letras
+$LYRICS_MODE   = 'embed'    # 'embed' (en el archivo) o 'file' (.lrc aparte)
+$LRCLIB_HOST   = 'https://lrclib.net'   # oficial o local (http://localhost:3300)
+$HAS_LYRICS    = $false     # Python + mutagen + requests disponibles
+$HAS_SYNCED    = $false     # syncedlyrics (metabuscador multired) disponible
 $DET_TYPE      = 'song'
 $DET_TITLE     = ''
 $DET_COUNT     = ''
@@ -185,6 +192,31 @@ function Test-Mutagen {
     return ($LASTEXITCODE -eq 0)
 }
 
+# Comprueba que Python pueda ejecutar una sentencia (p. ej. 'import requests')
+function Test-PyImport([string]$Stmt) {
+    if (-not $PY_EXE) { return $false }
+    & $PY_EXE @PY_ARGS -c $Stmt 2>$null | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+
+# Activa los colores ANSI de la consola (la salida de Python los usa)
+function Enable-VT {
+    try {
+        if (-not ('OtterRip.ConsoleVT' -as [type])) {
+            $sig = '[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int n); ' +
+                   '[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr h, out uint m); ' +
+                   '[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint m);'
+            Add-Type -Namespace OtterRip -Name ConsoleVT -MemberDefinition $sig
+        }
+        $h = [OtterRip.ConsoleVT]::GetStdHandle(-11)
+        $mode = [uint32]0
+        if (-not [OtterRip.ConsoleVT]::GetConsoleMode($h, [ref]$mode)) { return $false }
+        return [OtterRip.ConsoleVT]::SetConsoleMode($h, [uint32]($mode -bor 4))
+    } catch {
+        return $false
+    }
+}
+
 # ═══════════════════════════════════════════════════════════════
 #  DEPENDENCIAS
 # ═══════════════════════════════════════════════════════════════
@@ -256,7 +288,35 @@ function Install-Deps {
         }
     }
     if (-not $HAS_MUTAGEN) {
-        Say "  {y}⚠{/} Sin mutagen: se omite la reparación de metadatos y la portada manual."
+        Say "  {y}⚠{/} Sin mutagen: se omite la reparación de metadatos, la portada manual y las letras."
+    }
+
+    # ── Letras: requests (LRCLIB) + syncedlyrics (metabuscador multired, opcional) ──
+    $script:HAS_LYRICS = $false
+    $script:HAS_SYNCED = $false
+    if ($HAS_MUTAGEN) {
+        if (-not (Test-PyImport 'import requests')) {
+            Say "  {y}⚙{/} Instalando requests..."
+            & $PY_EXE @PY_ARGS -m pip install --user -q requests 2>&1 | Out-Null
+        }
+        if (Test-PyImport 'import requests') {
+            Say "  {g}✔{/} python-requests (letras LRCLIB)"
+            $script:HAS_LYRICS = $true
+        } else {
+            Say "  {y}⚠{/} requests no disponible: se omite la búsqueda de letras."
+        }
+        if ($HAS_LYRICS) {
+            if (-not (Test-PyImport 'import syncedlyrics')) {
+                Say "  {y}⚙{/} Instalando syncedlyrics (metabuscador de letras)..."
+                & $PY_EXE @PY_ARGS -m pip install --user -q syncedlyrics 2>&1 | Out-Null
+            }
+            if (Test-PyImport 'import syncedlyrics') {
+                Say "  {g}✔{/} syncedlyrics (Musixmatch / NetEase / Megalobiz)"
+                $script:HAS_SYNCED = $true
+            } else {
+                Say "  {y}⚠{/} syncedlyrics no disponible: las letras usarán solo LRCLIB."
+            }
+        }
     }
 
     Say "`n{g}  Dependencias listas.{/}`n"
@@ -378,6 +438,426 @@ function Repair-Metadata {
 }
 
 # ═══════════════════════════════════════════════════════════════
+#  LETRAS (LRCLIB + metabuscador)
+#  El script Python se escribe en %TEMP% y se ejecuta al final de cada
+#  descarga, solo sobre las pistas nuevas (lista que escribe yt-dlp).
+# ═══════════════════════════════════════════════════════════════
+$PY_LYRICS = @'
+import sys, os, re, time
+from pathlib import Path
+from urllib.parse import quote
+
+try:
+    from mutagen.mp3 import MP3
+    from mutagen.id3 import ID3, USLT, SYLT, ID3NoHeaderError
+    from mutagen.flac import FLAC
+    from mutagen.mp4 import MP4
+    import requests
+except ImportError as e:
+    print(f"  Error importando librerías: {e}")
+    sys.exit(1)
+
+# ANSI Colors para feedback visual en terminal (OTTERRIP_NOCOLOR=1 los desactiva)
+if os.environ.get('OTTERRIP_NOCOLOR'):
+    GREEN = YELLOW = CYAN = MAGENTA = RED = BOLD = NC = ''
+else:
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    CYAN = '\033[0;36m'
+    MAGENTA = '\033[0;35m'
+    RED = '\033[0;31m'
+    BOLD = '\033[1m'
+    NC = '\033[0m'
+
+target = Path(sys.argv[1])
+fmt = sys.argv[2]
+mode = sys.argv[3] # 'embed' or 'file'
+api_host = sys.argv[4].rstrip('/') if len(sys.argv) > 4 and sys.argv[4] else "https://lrclib.net"
+synced_dir = sys.argv[5] if len(sys.argv) > 5 else ""
+session_file = sys.argv[6] if len(sys.argv) > 6 else ""
+
+# Integración del metabuscador multired (letras-webs-buscar)
+if synced_dir and os.path.isdir(synced_dir):
+    sys.path.insert(0, synced_dir)
+
+try:
+    import syncedlyrics
+    HAS_SYNCEDLYRICS = True
+except Exception:
+    HAS_SYNCEDLYRICS = False
+
+API_GET = f"{api_host}/api/get"
+API_SEARCH = f"{api_host}/api/search"
+EXT = {"mp3": ".mp3", "flac": ".flac", "m4a": ".m4a"}.get(fmt, f".{fmt}")
+
+# Sesión HTTP reutilizable con User-Agent oficial requerido por LRCLIB
+session = requests.Session()
+session.headers.update({
+    "User-Agent": "OtterRip/6.1 (https://github.com/c0o0c/OtterRip; contact=music-app)",
+    "Accept": "application/json"
+})
+
+def safe_request(url, params):
+    """Ejecuta petición HTTP respetando límites de tasa (Rate Limiting)"""
+    for attempt in range(2):
+        try:
+            resp = session.get(url, params=params, timeout=8)
+            if resp.status_code == 429:
+                retry_after = 2.0
+                try:
+                    retry_after = float(resp.headers.get("Retry-After", 2.0))
+                except Exception:
+                    pass
+                print(f"       {YELLOW}⏳ Rate limit alcanzado. Pausando {retry_after:.1f}s...{NC}")
+                time.sleep(retry_after)
+                continue
+            return resp
+        except requests.RequestException:
+            pass
+        time.sleep(0.5)
+    return None
+
+def extract_primary_artist(raw_artist):
+    """Extrae únicamente el artista principal si existen múltiples colaboradores"""
+    if not raw_artist:
+        return ""
+    clean = re.sub(r'\[.*?\]|\(.*?\)', '', raw_artist).strip()
+    # Separadores de colaboradores: feat., ft., featuring, with, &, x, X, y, coma, punto y coma, barra
+    parts = re.split(
+        r'(?i:\s+(?:feat\.?|ft\.?|featuring|with)\s+|\s*[,;/]\s*|\s+&\s+|\s+[xX]\s+|\s+y\s+)',
+        clean
+    )
+    if parts and parts[0].strip():
+        return parts[0].strip()
+    return clean
+
+def extract_clean_track(raw_title, primary_artist=""):
+    """Extrae únicamente el nombre de la canción sin colaboradores ni etiquetas de video"""
+    if not raw_title:
+        return ""
+    s = raw_title
+    # Quitar identificadores de video de YouTube [xxxxxxxxxxx]
+    s = re.sub(r'\s*\[[a-zA-Z0-9_-]{11}\]\s*$', '', s)
+    # Quitar etiquetas de video y colaboraciones del título
+    noise_patterns = [
+        r'\[(?i:(?:official|video|music video|audio|lyric video|lyrics|hd|4k|remastered|explicit|visualizer|clip|videoclip)).*?\]',
+        r'\((?i:(?:official|video|music video|audio|lyric video|lyrics|hd|4k|remastered|explicit|visualizer|clip|videoclip oficial)).*?\)',
+        r'[\(\[]\s*(?i:feat\.?|ft\.?|featuring|with)\s+[^)\]]+[\)\]]',
+        r'(?i:\s+(?:feat\.?|ft\.?|featuring|with)\s+[^\-\(\]]*?)(?=\s*[-–—\(\[]|$)',
+        r'(?i:\s*[-–—]\s*(?:musica catolica|música católica|audio oficial|video oficial|en vivo).*$)',
+        r'(?i:\s+(?:musica catolica|música católica|audio oficial|video oficial).*$)'
+    ]
+    for p in noise_patterns:
+        s = re.sub(p, '', s)
+    s = re.sub(r'\s+', ' ', s).strip()
+    # Si el título aún conserva estructura "Artista - Canción", extraer solo la canción
+    if " - " in s:
+        parts = [p.strip() for p in s.split(" - ") if p.strip()]
+        if len(parts) >= 2:
+            if primary_artist and primary_artist.lower() in parts[0].lower():
+                s = parts[1]
+            elif not primary_artist:
+                s = parts[1]
+    # Limpieza final de descriptores comunes de canales/género
+    s = re.sub(r'(?i:\s*[-–—]?\s*m[uú]sica cat[oó]lica.*$)', '', s).strip()
+    return s.strip()
+
+def fetch_lyrics_hybrid(primary_artist, clean_track, duration=None):
+    """
+    Búsqueda híbrida en cascada para canciones, playlists y álbumes:
+    1. LRCLIB (Servidor oficial o local): búsqueda exacta y validación de duración.
+    2. syncedlyrics (Musixmatch, NetEase, Megalobiz): catálogo global multired.
+    3. Fallback a texto plano (Genius/Musixmatch) si no existe versión karaoke.
+    """
+    search_query = f"{primary_artist} {clean_track}".strip()
+
+    # ── Nivel 1: LRCLIB ───────────────────────────────────────
+    try:
+        params = {
+            "artist_name": primary_artist,
+            "track_name": clean_track
+        }
+        if duration and isinstance(duration, (int, float)) and duration > 0:
+            params["duration"] = int(round(duration))
+
+        # Fase 1: /api/get exacto con firma de audio y duración
+        resp = safe_request(API_GET, params)
+        if resp and resp.status_code == 200:
+            data = resp.json()
+            synced = data.get("syncedLyrics") or data.get("synchronizedLyrics")
+            if synced and "[00:" in synced:
+                return synced, True, "LRCLIB"
+
+        # Fase 2: /api/search en LRCLIB
+        search_params = {"track_name": clean_track, "artist_name": primary_artist}
+        resp_s = safe_request(API_SEARCH, search_params)
+        if not resp_s or resp_s.status_code != 200 or not resp_s.json():
+            resp_s = safe_request(API_SEARCH, {"q": search_query})
+
+        if resp_s and resp_s.status_code == 200:
+            results = resp_s.json()
+            if isinstance(results, list):
+                synced_candidates = [
+                    r for r in results
+                    if (r.get("syncedLyrics") or r.get("synchronizedLyrics")) and "[00:" in (r.get("syncedLyrics") or r.get("synchronizedLyrics"))
+                ]
+                if synced_candidates:
+                    best = None
+                    if duration and duration > 0:
+                        close = [
+                            c for c in synced_candidates
+                            if c.get("duration") and abs(c["duration"] - duration) <= 4.5
+                        ]
+                        if close:
+                            best = min(close, key=lambda c: abs(c["duration"] - duration))
+                    if not best:
+                        best = synced_candidates[0]
+
+                    synced = best.get("syncedLyrics") or best.get("synchronizedLyrics")
+                    return synced, True, "LRCLIB"
+    except Exception:
+        pass
+
+    # ── Nivel 2: Multibuscador syncedlyrics (Musixmatch, NetEase, Megalobiz) ─
+    if HAS_SYNCEDLYRICS:
+        try:
+            lrc_synced = syncedlyrics.search(search_query, synced_only=True)
+            if lrc_synced and "[00:" in lrc_synced:
+                return lrc_synced, True, "Multi-Web (Musixmatch/NetEase)"
+        except Exception:
+            pass
+
+        # ── Nivel 3: Respaldo en texto plano (Genius/Musixmatch) ──
+        try:
+            lrc_plain = syncedlyrics.search(search_query, plain_only=True)
+            if lrc_plain and lrc_plain.strip():
+                return lrc_plain.strip(), False, "Genius/Musixmatch (Texto)"
+        except Exception:
+            pass
+
+    return None, False, ""
+
+def parse_lrc_for_sylt(lrc_text):
+    """Convierte texto LRC en tuplas (texto, ms) para la trama binaria SYLT de ID3"""
+    entries = []
+    pattern = re.compile(r"\[(\d+):(\d+(?:\.\d+)?)\](.*)")
+    for line in lrc_text.splitlines():
+        m = pattern.match(line.strip())
+        if m:
+            minutes = int(m.group(1))
+            seconds = float(m.group(2))
+            ms = int((minutes * 60 + seconds) * 1000)
+            txt = m.group(3).strip()
+            entries.append((txt, ms))
+    return entries
+
+def save_lyrics_to_file(audio_path, text, is_synced=False):
+    ext = ".lrc" if is_synced and "[00:" in text else ".txt"
+    txt_path = audio_path.with_suffix(ext)
+    with open(txt_path, 'w', encoding='utf-8') as f:
+        f.write(text)
+    return txt_path
+
+def embed_lyrics_mp3(path, text, is_synced=False):
+    try:
+        audio = MP3(path, ID3=ID3)
+    except ID3NoHeaderError:
+        audio = MP3(path)
+        audio.add_tags()
+    
+    if not audio.tags:
+        audio.add_tags()
+
+    # Guardar en USLT con marcas de tiempo (compatible con la gran mayoría de reproductores)
+    frame_uslt = USLT(encoding=3, lang='eng', desc='', text=text)
+    audio.tags.setall('USLT', [frame_uslt])
+
+    # Si es sincronizada, guardar también trama nativa SYLT de ID3v2
+    if is_synced:
+        sylt_entries = parse_lrc_for_sylt(text)
+        if sylt_entries:
+            try:
+                frame_sylt = SYLT(encoding=3, lang='eng', format=1, type=1, desc='Lyrics', text=sylt_entries)
+                audio.tags.setall('SYLT', [frame_sylt])
+            except Exception:
+                pass
+    
+    audio.save(v2_version=3)
+
+def embed_lyrics_flac(path, text, is_synced=False):
+    audio = FLAC(path)
+    audio['LYRICS'] = text
+    audio.save()
+
+def embed_lyrics_m4a(path, text, is_synced=False):
+    audio = MP4(path)
+    if not audio.tags:
+        audio.add_tags()
+    audio.tags['\xa9lyr'] = text
+    audio.save()
+
+# Escaneo de archivos de audio: si se proporciona la sesión actual, procesar solo las recién descargadas
+audio_files = []
+if session_file and os.path.isfile(session_file):
+    with open(session_file, 'r', encoding='utf-8', errors='ignore') as sf:
+        for line in sf:
+            raw_p = line.strip()
+            if raw_p:
+                p = Path(raw_p)
+                if p.is_file() and p.suffix.lower() == EXT.lower() and p not in audio_files:
+                    audio_files.append(p)
+else:
+    if target.is_file():
+        audio_files = [target] if target.suffix.lower() == EXT.lower() else []
+    elif target.is_dir():
+        audio_files = sorted([f for f in target.rglob("*") if f.is_file() and f.suffix.lower() == EXT.lower()])
+
+total = len(audio_files)
+
+if total == 0:
+    print(f"  {YELLOW}→ No se encontraron pistas nuevas ({EXT}) para procesar.{NC}")
+    sys.exit(0)
+
+print(f"\n{BOLD}{CYAN}══ Búsqueda e Incrustación Automática de Letras (1 a 1) ══{NC}")
+print(f"  {BOLD}Servidor Principal:{NC} {api_host}")
+if HAS_SYNCEDLYRICS:
+    print(f"  {BOLD}Metabuscador:{NC}       Multi-Web activo (Musixmatch, NetEase, Megalobiz, Genius)")
+print(f"  {BOLD}Pistas a procesar:{NC}  {total}\n")
+
+count_already = 0
+count_processed = 0
+count_notfound = 0
+
+for idx, fp in enumerate(audio_files, 1):
+    try:
+        artist = ""
+        title = str(fp.stem)
+        duration = 0
+        has_lyrics_already = False
+
+        # Parsear nombre de archivo base
+        clean_title = title
+        if " - " in title:
+            parts = title.split(" - ", 1)
+            artist = parts[0].strip()
+            clean_title = parts[1].strip()
+
+        # Extraer metadatos reales según formato
+        try:
+            if fmt == "mp3":
+                t = ID3(fp)
+                if t.get("TPE1"): artist = str(t["TPE1"])
+                if t.get("TIT2"): clean_title = str(t["TIT2"])
+                if t.get("SYLT") or (t.get("USLT") and "[00:" in str(t.get("USLT"))):
+                    has_lyrics_already = True
+                audio_obj = MP3(fp)
+                duration = audio_obj.info.length
+            elif fmt == "flac":
+                t = FLAC(fp)
+                if t.get("artist"): artist = t["artist"][0]
+                if t.get("title"): clean_title = t["title"][0]
+                if t.get("lyrics") and "[00:" in str(t.get("lyrics")[0]):
+                    has_lyrics_already = True
+                audio_obj = FLAC(fp)
+                duration = audio_obj.info.length
+            elif fmt == "m4a":
+                t = MP4(fp)
+                if t.tags.get("\xa9ART"): artist = t.tags["\xa9ART"][0]
+                if t.tags.get("\xa9nam"): clean_title = t.tags["\xa9nam"][0]
+                if t.tags.get("\xa9lyr") and "[00:" in str(t.tags.get("\xa9lyr")[0]):
+                    has_lyrics_already = True
+                audio_obj = MP4(fp)
+                duration = audio_obj.info.length
+        except Exception:
+            pass
+
+        # Extraer artista principal y título limpio (sin colaboradores secundarios en la búsqueda)
+        primary_artist = extract_primary_artist(artist)
+        clean_track = extract_clean_track(clean_title, primary_artist)
+
+        display_name = f"{primary_artist} - {clean_track}" if primary_artist else clean_track
+        print(f"  [{idx}/{total}] 🎵 {BOLD}{display_name}{NC}")
+        if artist and primary_artist and artist.strip() != primary_artist.strip():
+            print(f"       {MAGENTA}👤 Colaboración detectada: \"{artist}\" → Artista principal: {primary_artist}{NC}")
+
+        if has_lyrics_already:
+            print(f"       {GREEN}✔ Ya contiene letras sincronizadas incrustadas. Omitiendo.{NC}")
+            count_already += 1
+            continue
+
+        # Verificar si hay un .lrc local descargado por yt-dlp
+        lyrics = None
+        is_synced = False
+        provider_name = "Local"
+        lrc_file = fp.with_suffix('.lrc')
+        if lrc_file.exists():
+            try:
+                with open(lrc_file, 'r', encoding='utf-8') as lf:
+                    content = lf.read()
+                    if "[00:" in content:
+                        lyrics = content
+                        is_synced = True
+                        print(f"       {GREEN}✔ Archivo .lrc local detectado y sincronizado.{NC}")
+            except Exception:
+                pass
+
+        # Si no hay letra local, consultar motores híbridos (LRCLIB + Multi-Web)
+        if not lyrics:
+            print(f"       {CYAN}🔍 Buscando letra ({primary_artist} - {clean_track})...{NC}")
+            lyrics, is_synced, provider_name = fetch_lyrics_hybrid(primary_artist, clean_track, duration)
+            time.sleep(0.35)
+
+        if lyrics:
+            if mode == "file":
+                out_p = save_lyrics_to_file(fp, lyrics, is_synced)
+                ltype = "sincronizada" if is_synced else "texto plano"
+                print(f"       {GREEN}✔ Letra {ltype} [{provider_name}] guardada en {out_p.name}{NC}")
+            else:
+                if fmt == "mp3": embed_lyrics_mp3(fp, lyrics, is_synced)
+                elif fmt == "flac": embed_lyrics_flac(fp, lyrics, is_synced)
+                elif fmt == "m4a": embed_lyrics_m4a(fp, lyrics, is_synced)
+                if is_synced:
+                    print(f"       {GREEN}✔ Letra sincronizada [{provider_name}] incrustada y alineada con la pista de audio.{NC}")
+                else:
+                    print(f"       {YELLOW}✔ Letra en texto plano [{provider_name}] incrustada en la pista de audio.{NC}")
+            count_processed += 1
+        else:
+            print(f"       {YELLOW}⚠ No se encontró letra disponible para esta pista de audio.{NC}")
+            count_notfound += 1
+
+    except Exception as e:
+        print(f"       {RED}✘ Error procesando archivo: {e}{NC}")
+
+print(f"\n  {BOLD}Resumen de Letras:{NC}")
+print(f"  → {GREEN}Letras incrustadas/guardadas:{NC} {count_processed}")
+print(f"  → {CYAN}Ya sincronizadas previamente:{NC} {count_already}")
+print(f"  → {YELLOW}Sin letra encontrada:{NC}        {count_notfound}")
+'@
+
+function Invoke-Lyrics {
+    param([string]$Dir, [string]$Fmt, [string]$SessionFile)
+    if (-not $FETCH_LYRICS) { return }
+    if (-not $HAS_LYRICS -or -not $PY_EXE) {
+        Say "  {y}⚠ Letras omitidas: requiere Python + mutagen + requests.{/}"
+        return
+    }
+
+    $pyFile = Join-Path $env:TEMP 'otterrip_lyrics.py'
+    [System.IO.File]::WriteAllText($pyFile, $PY_LYRICS, (New-Object System.Text.UTF8Encoding($false)))
+
+    # Metabuscador local opcional (carpeta junto al .bat); si no existe se usa el instalado con pip
+    $syncedDir = Join-Path $BASE_DIR 'letras-webs-buscar'
+
+    # Sin barra final (evita que una barra invertida escape la comilla de cierre)
+    $dirArg = if ($Dir.Length -gt 3) { $Dir.TrimEnd([char]92) } else { $Dir + '.' }
+
+    # Colores ANSI en la salida de Python; si la consola no los admite se desactivan
+    $env:OTTERRIP_NOCOLOR = $(if (Enable-VT) { '' } else { '1' })
+
+    & $PY_EXE @PY_ARGS $pyFile $dirArg $Fmt $LYRICS_MODE $LRCLIB_HOST $syncedDir $SessionFile
+}
+
+# ═══════════════════════════════════════════════════════════════
 #  MENÚ PRINCIPAL
 # ═══════════════════════════════════════════════════════════════
 function Get-AlbumLayoutLabel {
@@ -389,7 +869,7 @@ function Show-MainMenu {
     while ($true) {
         Clear-Host
         Say "{c}  ╔══════════════════════════════════════════════════╗{/}"
-        Say "{c}  ║                 🦦 OTTER RIP v5                 ║{/}"
+        Say "{c}  ║                🦦 OTTER RIP v6.1                ║{/}"
         Say "{c}  ╚══════════════════════════════════════════════════╝{/}"
         $durTxt = ">$($DUR_MIN)s y ≤ $([math]::Floor($DUR_MAX / 60))m $($DUR_MAX % 60)s"
         $parTxt = if ($PARALLEL_JOBS -gt 1) { '(activo)' } else { '(secuencial)' }
@@ -398,6 +878,9 @@ function Show-MainMenu {
         Say "  {b}Perfil:{/}      $PROFILE_NAME"
         Say "  {b}Duración:{/}    $durTxt"
         Say "  {b}Paralelo:{/}    $PARALLEL_JOBS worker(s) $parTxt"
+        $lyEng = if ($HAS_SYNCED) { 'LRCLIB + Multi-Web' } else { 'LRCLIB' }
+        $lyTxt = if ($FETCH_LYRICS) { "{g}✔ ON{/} ($LYRICS_MODE) [$lyEng]" } else { '{r}✘ OFF{/}' }
+        Say "  {b}Letras:{/}      $lyTxt"
         Say "  {b}Álbum:{/}       $(Get-AlbumLayoutLabel)"
         Say "  {b}Portada:{/}     $coverTxt"
         Say "  {b}Destino:{/}     $destTxt"
@@ -408,9 +891,10 @@ function Show-MainMenu {
         Say "  {c}4){/} Configurar descargas paralelas"
         Say "  {c}5){/} Configurar carpeta de álbum"
         Say "  {c}6){/} Configurar portada manual"
-        Say "  {c}7){/} Guía de calidad"
-        Say "  {c}8){/} Abrir última carpeta de destino"
-        Say "  {c}9){/} Salir"
+        Say "  {c}7){/} Configurar LETRAS (LRCLib & Multi-Web)"
+        Say "  {c}8){/} Guía de calidad"
+        Say "  {c}9){/} Abrir última carpeta de destino"
+        Say "  {c}0){/} Salir"
         Say ""
         $op = Ask "  Opción"
         switch ($op) {
@@ -420,12 +904,13 @@ function Show-MainMenu {
             '4' { Show-ParallelMenu }
             '5' { Show-AlbumLayoutMenu }
             '6' { Show-CoverMenu }
-            '7' { Show-GuideMenu }
-            '8' {
+            '7' { Show-LyricsMenu }
+            '8' { Show-GuideMenu }
+            '9' {
                 $p = if ($LAST_DIR -and (Test-Path -LiteralPath $LAST_DIR)) { $LAST_DIR } else { [Environment]::GetFolderPath('MyMusic') }
                 Invoke-Item -LiteralPath $p
             }
-            '9' { Say "`n  {g}¡Hasta luego!{/}`n"; exit 0 }
+            '0' { Say "`n  {g}¡Hasta luego!{/}`n"; exit 0 }
             default { Say "  {r}Opción inválida.{/}"; Start-Sleep -Seconds 1 }
         }
     }
@@ -549,6 +1034,77 @@ function Show-CoverMenu {
 }
 
 # ═══════════════════════════════════════════════════════════════
+#  CONFIGURACIÓN DE LETRAS
+# ═══════════════════════════════════════════════════════════════
+function Show-LyricsMenu {
+    while ($true) {
+        Clear-Host
+        Say "{c}══ Configuración de Letras (LRCLib) ══{/}`n"
+        Say "  OtterRip usa la API abierta de LRCLIB (no requiere API Key)."
+        Say "  Puedes usar el servidor oficial en internet o tu servidor local Rust."
+        Say ""
+        $st = if ($FETCH_LYRICS) { '{g}ACTIVO{/}' } else { '{r}INACTIVO{/}' }
+        $md = if ($LYRICS_MODE -eq 'embed') { 'Incrustar en tags' } else { 'Archivo .lrc/.txt separado' }
+        $en = if ($HAS_SYNCED) { 'LRCLIB + Multi-Web (Musixmatch, NetEase, Megalobiz)' } else { 'solo LRCLIB (syncedlyrics no instalado)' }
+        Say "  {b}Estado:{/}        $st"
+        Say "  {b}Modo:{/}          $LYRICS_MODE ($md)"
+        Say "  {b}Servidor API:{/}  {m}$LRCLIB_HOST{/}"
+        Say "  {b}Motores:{/}       $en"
+        if (-not $HAS_LYRICS) { Say "  {y}⚠ Requiere Python + mutagen + requests (no disponibles ahora).{/}" }
+        Say ""
+        Say "  {c}1){/} Activar / Desactivar búsqueda de letras"
+        Say "  {c}2){/} Modo: Incrustar en el archivo de audio (ID3/FLAC/M4A)"
+        Say "  {c}3){/} Modo: Guardar como archivo .lrc / .txt separado"
+        Say "  {c}4){/} Conectar a Servidor Oficial (https://lrclib.net)"
+        Say "  {c}5){/} Conectar a Servidor Local (http://localhost:3300) [letras/]"
+        Say "  {c}6){/} Ingresar URL de servidor personalizada"
+        Say "  {c}0){/} Volver al menú principal"
+        Say ""
+        $l = Ask "  Opción"
+        switch ($l) {
+            '1' {
+                $script:FETCH_LYRICS = -not $FETCH_LYRICS
+                if ($FETCH_LYRICS) { Say "  {g}Búsqueda de letras ACTIVADA.{/}" }
+                else               { Say "  {y}Búsqueda de letras DESACTIVADA.{/}" }
+                Start-Sleep -Seconds 1
+            }
+            '2' {
+                $script:LYRICS_MODE = 'embed'
+                Say "  {g}Modo: Incrustar en el archivo de audio.{/}"
+                Start-Sleep -Seconds 1
+            }
+            '3' {
+                $script:LYRICS_MODE = 'file'
+                Say "  {g}Modo: Crear archivo .lrc o .txt junto a la canción.{/}"
+                Start-Sleep -Seconds 1
+            }
+            '4' {
+                $script:LRCLIB_HOST = 'https://lrclib.net'
+                Say "  {g}Servidor configurado a Oficial: $LRCLIB_HOST{/}"
+                Start-Sleep -Seconds 1
+            }
+            '5' {
+                $script:LRCLIB_HOST = 'http://localhost:3300'
+                Say "  {g}Servidor configurado a Local: $LRCLIB_HOST{/}"
+                Start-Sleep -Seconds 1
+            }
+            '6' {
+                $custom = Ask "  Ingresa la URL del servidor API (ej. http://127.0.0.1:3300)"
+                if ($custom -match '^https?://') {
+                    $script:LRCLIB_HOST = $custom.TrimEnd('/')
+                    Say "  {g}Servidor actualizado a: $LRCLIB_HOST{/}"
+                } elseif ($custom) {
+                    Say "  {r}La URL debe empezar por http:// o https://{/}"
+                }
+                Start-Sleep -Seconds 1
+            }
+            { $_ -eq '0' -or $_ -eq '' } { return }
+            default { Say "  {r}Opción inválida.{/}"; Start-Sleep -Seconds 1 }
+        }
+    }
+}
+
+# ═══════════════════════════════════════════════════════════════
 #  GUÍA
 # ═══════════════════════════════════════════════════════════════
 function Show-GuideMenu {
@@ -560,6 +1116,7 @@ function Show-GuideMenu {
     Say "  {b}FLAC 24/96{/}         — Hi-Res lossless."
     Say ""
     Say "  {y}⚠{/} La calidad real está limitada por la fuente."
+    Say "  {y}ℹ{/} Las letras se obtienen de lrclib.net (gratis, sin key)."
     Say ""
     Read-Host "  Enter para volver..." | Out-Null
 }
@@ -733,6 +1290,9 @@ function Invoke-DownloadMenu {
             '--embed-thumbnail', '--convert-thumbnails', 'jpg',
             '--download-archive', $archive
         )
+        # Letras: bajar .lrc si la fuente lo ofrece (luego se completan con LRCLIB / Multi-Web)
+        if ($FETCH_LYRICS) { $flags += @('--write-sub', '--sub-lang', 'es,en', '--sub-format', 'lrc/best') }
+
         if ($PP_VALUE) { $flags += @('--postprocessor-args', $PP_VALUE) }
         if ($AFMT -eq 'mp3') { $flags += @('--postprocessor-args', 'ffmpeg:-id3v2_version 3 -write_id3v1 1') }
 
@@ -741,9 +1301,13 @@ function Invoke-DownloadMenu {
         Say "  Perfil:   {b}$PROFILE_NAME{/}"
         Say "  Duración: {b}>$($DUR_MIN)s y ≤$($DUR_MAX)s{/}"
         Say "  Destino:  {c}$dest{/}"
+        if ($FETCH_LYRICS) { Say "  Letras:   {m}Activas [$LRCLIB_HOST] ($LYRICS_MODE){/}" }
 
         $since  = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 5
         $status = 0
+
+        # Lista de archivos nuevos de esta descarga (la escribe yt-dlp; las letras solo se buscan para estos)
+        $session = [IO.Path]::GetTempFileName()
 
         # ════════════════════════════════════════════════════════
         #  MODO PARALELO  (playlist / álbum con PARALLEL_JOBS > 1)
@@ -759,6 +1323,7 @@ function Invoke-DownloadMenu {
             $total = $itemUrls.Count
 
             if ($total -eq 0) {
+                Remove-Item -LiteralPath $session -Force -ErrorAction SilentlyContinue
                 Say "  {y}⚠ Sin elementos (¿URL inválida?).{/}"
                 Start-Sleep -Seconds 2; continue
             }
@@ -769,7 +1334,7 @@ function Invoke-DownloadMenu {
             $wOutTpl = if ($safeTitle) { $destT + $safeTitle + '/%(title)s.%(ext)s' }
                        else            { $destT + '%(title)s.%(ext)s' }
 
-            $wBase = @('--no-playlist') + $flags + @('--no-progress', '--quiet', '-o', $wOutTpl)
+            $wBase = @('--no-playlist') + $flags + @('--print-to-file', 'after_move:filepath', $session, '--no-progress', '--quiet', '-o', $wOutTpl)
 
             $active = New-Object System.Collections.ArrayList
             $next = 0; $done = 0; $ok = 0; $err = 0
@@ -829,7 +1394,7 @@ function Invoke-DownloadMenu {
             Say "  {y}Los elementos con error se omiten y yt-dlp continúa.{/}"
             Say ""
 
-            $cmd = $flags + @($plFlag, '--progress', '--newline', '-o', $outTpl)
+            $cmd = $flags + @($plFlag, '--print-to-file', 'after_move:filepath', $session, '--progress', '--newline', '-o', $outTpl)
             & $YTDLP @cmd $url
             $status = $LASTEXITCODE
         }
@@ -838,6 +1403,23 @@ function Invoke-DownloadMenu {
         Say ""
         Say "  {y}⚙{/}  Reparando metadatos..."
         Repair-Metadata -Dir $dest -Fmt $AFMT -Since $since
+
+        # ── Letras (solo para las pistas nuevas de esta descarga) ──
+        $newCount = 0
+        if (Test-Path -LiteralPath $session) {
+            $newCount = @(Get-Content -LiteralPath $session -Encoding UTF8 -ErrorAction SilentlyContinue |
+                          Where-Object { $_ -and "$_".Trim() }).Count
+        }
+        if ($FETCH_LYRICS) {
+            Say ""
+            if ($newCount -gt 0) {
+                Say "  {y}⚙{/}  Buscando e incrustando letras ($newCount pista(s) nueva(s))..."
+                Invoke-Lyrics -Dir $dest -Fmt $AFMT -SessionFile $session
+            } else {
+                Say "  {g}✔ No hay pistas nuevas que requieran letras (ya descargadas).{/}"
+            }
+        }
+        Remove-Item -LiteralPath $session -Force -ErrorAction SilentlyContinue
 
         Say ""
         if ($status -eq 0) {

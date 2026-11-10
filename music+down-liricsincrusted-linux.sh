@@ -23,7 +23,6 @@ COVER_LOCAL=""
 DUR_MIN=60
 DUR_MAX=480
 ALBUM_LAYOUT="single"
-PARALLEL_JOBS=3      # workers concurrentes
 FETCH_LYRICS=true    # Activar/desactivar búsqueda de letras
 LYRICS_MODE="embed"  # 'embed' (en el archivo) o 'file' (.lrc aparte)
 LRCLIB_HOST="https://lrclib.net" # Servidor API de LRCLIB (oficial o local http://localhost:3300)
@@ -74,9 +73,9 @@ install_deps() {
     fi
 
     # Necesario para leer/escribir letras y metadatos avanzados
-    if ! python3 -c "import mutagen; import requests" 2>/dev/null; then
-        echo -e "  ${YELLOW}⚙${NC} Instalando librerías Python (mutagen, requests)..."
-        _pip "mutagen requests" \
+    if ! python3 -c "import mutagen; import requests; import bs4; import rapidfuzz" 2>/dev/null; then
+        echo -e "  ${YELLOW}⚙${NC} Instalando librerías Python (mutagen, requests, bs4, rapidfuzz)..."
+        _pip "mutagen requests beautifulsoup4 rapidfuzz" \
             || { echo -e "  ${RED}✘ Error instalando librerías Python${NC}"; exit 1; }
     else
         echo -e "  ${GREEN}✔${NC} Librerías Python listas"
@@ -98,7 +97,7 @@ install_deps() {
 #  GESTIÓN DE LETRAS (API LRCLIB.NET)
 # ═══════════════════════════════════════════════════════════════
 process_lyrics() {
-    local dir="$1" fmt="$2"
+    local dir="$1" fmt="$2" session_file="$3"
     
     # Solo ejecutar si está activado
     [[ "$FETCH_LYRICS" != "true" ]] && return 0
@@ -109,7 +108,9 @@ process_lyrics() {
         return 1
     fi
 
-    python3 - "$dir" "$fmt" "$LYRICS_MODE" "$LRCLIB_HOST" <<'PYEOF'
+    local SYNCED_DIR="$SCRIPT_DIR/letras-webs-buscar"
+
+    python3 - "$dir" "$fmt" "$LYRICS_MODE" "$LRCLIB_HOST" "$SYNCED_DIR" "$session_file" <<'PYEOF'
 import sys, os, re, time
 from pathlib import Path
 from urllib.parse import quote
@@ -137,6 +138,18 @@ target = Path(sys.argv[1])
 fmt = sys.argv[2]
 mode = sys.argv[3] # 'embed' or 'file'
 api_host = sys.argv[4].rstrip('/') if len(sys.argv) > 4 and sys.argv[4] else "https://lrclib.net"
+synced_dir = sys.argv[5] if len(sys.argv) > 5 else ""
+session_file = sys.argv[6] if len(sys.argv) > 6 else ""
+
+# Integración del metabuscador multired (letras-webs-buscar)
+if synced_dir and os.path.isdir(synced_dir):
+    sys.path.insert(0, synced_dir)
+
+try:
+    import syncedlyrics
+    HAS_SYNCEDLYRICS = True
+except Exception:
+    HAS_SYNCEDLYRICS = False
 
 API_GET = f"{api_host}/api/get"
 API_SEARCH = f"{api_host}/api/search"
@@ -214,59 +227,80 @@ def extract_clean_track(raw_title, primary_artist=""):
     s = re.sub(r'(?i:\s*[-–—]?\s*m[uú]sica cat[oó]lica.*$)', '', s).strip()
     return s.strip()
 
-def fetch_lyrics_lrclib(primary_artist, clean_title, duration=None):
+def fetch_lyrics_hybrid(primary_artist, clean_track, duration=None):
     """
-    Busca letras EXCLUSIVAMENTE sincronizadas con la pista de audio:
-    - Búsqueda solo con Artista Principal y Nombre de Canción.
-    - Sincronización estricta validando duración real del audio (tolerancia ±2s a ±4s).
-    - Lee 'syncedLyrics' (o 'synchronizedLyrics' según versión de la API).
+    Búsqueda híbrida en cascada para canciones, playlists y álbumes:
+    1. LRCLIB (Servidor oficial o local): búsqueda exacta y validación de duración.
+    2. syncedlyrics (Musixmatch, NetEase, Megalobiz): catálogo global multired.
+    3. Fallback a texto plano (Genius/Musixmatch) si no existe versión karaoke.
     """
-    params = {
-        "artist_name": primary_artist,
-        "track_name": clean_title
-    }
-    if duration and isinstance(duration, (int, float)) and duration > 0:
-        params["duration"] = int(round(duration))
+    search_query = f"{primary_artist} {clean_track}".strip()
 
-    # Fase 1: /api/get exacto con firma de audio y duración
-    resp = safe_request(API_GET, params)
-    if resp and resp.status_code == 200:
-        data = resp.json()
-        synced = data.get("syncedLyrics") or data.get("synchronizedLyrics")
-        if synced and "[00:" in synced:
-            return synced, True
+    # ── Nivel 1: LRCLIB ───────────────────────────────────────
+    try:
+        params = {
+            "artist_name": primary_artist,
+            "track_name": clean_track
+        }
+        if duration and isinstance(duration, (int, float)) and duration > 0:
+            params["duration"] = int(round(duration))
 
-    # Fase 2: /api/search buscando versiones que sí tengan letra sincronizada
-    search_params = {"track_name": clean_title, "artist_name": primary_artist}
-    resp_s = safe_request(API_SEARCH, search_params)
-    if not resp_s or resp_s.status_code != 200 or not resp_s.json():
-        resp_s = safe_request(API_SEARCH, {"q": f"{primary_artist} {clean_title}"})
+        # Fase 1: /api/get exacto con firma de audio y duración
+        resp = safe_request(API_GET, params)
+        if resp and resp.status_code == 200:
+            data = resp.json()
+            synced = data.get("syncedLyrics") or data.get("synchronizedLyrics")
+            if synced and "[00:" in synced:
+                return synced, True, "LRCLIB"
 
-    if resp_s and resp_s.status_code == 200:
-        results = resp_s.json()
-        if isinstance(results, list):
-            # Filtrar estrictamente solo aquellas con letra sincronizada
-            synced_candidates = [
-                r for r in results
-                if (r.get("syncedLyrics") or r.get("synchronizedLyrics")) and "[00:" in (r.get("syncedLyrics") or r.get("synchronizedLyrics"))
-            ]
-            if synced_candidates:
-                best = None
-                if duration and duration > 0:
-                    # Seleccionar la candidata cuya duración coincida con la pista (±4s)
-                    close_candidates = [
-                        c for c in synced_candidates
-                        if c.get("duration") and abs(c["duration"] - duration) <= 4.5
-                    ]
-                    if close_candidates:
-                        best = min(close_candidates, key=lambda c: abs(c["duration"] - duration))
-                if not best:
-                    best = synced_candidates[0]
+        # Fase 2: /api/search en LRCLIB
+        search_params = {"track_name": clean_track, "artist_name": primary_artist}
+        resp_s = safe_request(API_SEARCH, search_params)
+        if not resp_s or resp_s.status_code != 200 or not resp_s.json():
+            resp_s = safe_request(API_SEARCH, {"q": search_query})
 
-                synced = best.get("syncedLyrics") or best.get("synchronizedLyrics")
-                return synced, True
+        if resp_s and resp_s.status_code == 200:
+            results = resp_s.json()
+            if isinstance(results, list):
+                synced_candidates = [
+                    r for r in results
+                    if (r.get("syncedLyrics") or r.get("synchronizedLyrics")) and "[00:" in (r.get("syncedLyrics") or r.get("synchronizedLyrics"))
+                ]
+                if synced_candidates:
+                    best = None
+                    if duration and duration > 0:
+                        close = [
+                            c for c in synced_candidates
+                            if c.get("duration") and abs(c["duration"] - duration) <= 4.5
+                        ]
+                        if close:
+                            best = min(close, key=lambda c: abs(c["duration"] - duration))
+                    if not best:
+                        best = synced_candidates[0]
 
-    return None, False
+                    synced = best.get("syncedLyrics") or best.get("synchronizedLyrics")
+                    return synced, True, "LRCLIB"
+    except Exception:
+        pass
+
+    # ── Nivel 2: Multibuscador syncedlyrics (Musixmatch, NetEase, Megalobiz) ─
+    if HAS_SYNCEDLYRICS:
+        try:
+            lrc_synced = syncedlyrics.search(search_query, synced_only=True)
+            if lrc_synced and "[00:" in lrc_synced:
+                return lrc_synced, True, "Multi-Web (Musixmatch/NetEase)"
+        except Exception:
+            pass
+
+        # ── Nivel 3: Respaldo en texto plano (Genius/Musixmatch) ──
+        try:
+            lrc_plain = syncedlyrics.search(search_query, plain_only=True)
+            if lrc_plain and lrc_plain.strip():
+                return lrc_plain.strip(), False, "Genius/Musixmatch (Texto)"
+        except Exception:
+            pass
+
+    return None, False, ""
 
 def parse_lrc_for_sylt(lrc_text):
     """Convierte texto LRC en tuplas (texto, ms) para la trama binaria SYLT de ID3"""
@@ -327,17 +361,33 @@ def embed_lyrics_m4a(path, text, is_synced=False):
     audio.tags['\xa9lyr'] = text
     audio.save()
 
-# Escaneo de archivos de audio
-audio_files = sorted(target.rglob(f"*{EXT}"))
+# Escaneo de archivos de audio: si se proporciona la sesión actual, procesar solo las recién descargadas
+audio_files = []
+if session_file and os.path.isfile(session_file):
+    with open(session_file, 'r', encoding='utf-8', errors='ignore') as sf:
+        for line in sf:
+            raw_p = line.strip()
+            if raw_p:
+                p = Path(raw_p)
+                if p.is_file() and p.suffix.lower() == EXT.lower() and p not in audio_files:
+                    audio_files.append(p)
+else:
+    if target.is_file():
+        audio_files = [target] if target.suffix.lower() == EXT.lower() else []
+    elif target.is_dir():
+        audio_files = sorted([f for f in target.rglob("*") if f.is_file() and f.suffix.lower() == EXT.lower()])
+
 total = len(audio_files)
 
 if total == 0:
-    print(f"  {YELLOW}→ No se encontraron archivos de audio ({EXT}) en {target}{NC}")
+    print(f"  {YELLOW}→ No se encontraron pistas nuevas ({EXT}) para procesar.{NC}")
     sys.exit(0)
 
-print(f"\n{BOLD}{CYAN}══ Búsqueda e Incrustación de Letras Sincronizadas (1 a 1) ══{NC}")
-print(f"  {BOLD}Servidor API:{NC}       {api_host}")
-print(f"  {BOLD}Archivos en cola:{NC}   {total}\n")
+print(f"\n{BOLD}{CYAN}══ Búsqueda e Incrustación Automática de Letras (1 a 1) ══{NC}")
+print(f"  {BOLD}Servidor Principal:{NC} {api_host}")
+if HAS_SYNCEDLYRICS:
+    print(f"  {BOLD}Metabuscador:{NC}       Multi-Web activo (Musixmatch, NetEase, Megalobiz, Genius)")
+print(f"  {BOLD}Pistas a procesar:{NC}  {total}\n")
 
 count_already = 0
 count_processed = 0
@@ -403,6 +453,7 @@ for idx, fp in enumerate(audio_files, 1):
         # Verificar si hay un .lrc local descargado por yt-dlp
         lyrics = None
         is_synced = False
+        provider_name = "Local"
         lrc_file = fp.with_suffix('.lrc')
         if lrc_file.exists():
             try:
@@ -415,34 +466,37 @@ for idx, fp in enumerate(audio_files, 1):
             except Exception:
                 pass
 
-        # Si no hay letra local, consultar LRCLIB
+        # Si no hay letra local, consultar motores híbridos (LRCLIB + Multi-Web)
         if not lyrics:
-            print(f"       {CYAN}🔍 Buscando letra sincronizada ({primary_artist} - {clean_track})...{NC}")
-            lyrics, is_synced = fetch_lyrics_lrclib(primary_artist, clean_track, duration)
-            # Throttling requerido por api.txt (200-500ms)
+            print(f"       {CYAN}🔍 Buscando letra ({primary_artist} - {clean_track})...{NC}")
+            lyrics, is_synced, provider_name = fetch_lyrics_hybrid(primary_artist, clean_track, duration)
             time.sleep(0.35)
 
-        if lyrics and is_synced:
+        if lyrics:
             if mode == "file":
                 out_p = save_lyrics_to_file(fp, lyrics, is_synced)
-                print(f"       {GREEN}✔ Letra sincronizada guardada en {out_p.name}{NC}")
+                ltype = "sincronizada" if is_synced else "texto plano"
+                print(f"       {GREEN}✔ Letra {ltype} [{provider_name}] guardada en {out_p.name}{NC}")
             else:
                 if fmt == "mp3": embed_lyrics_mp3(fp, lyrics, is_synced)
                 elif fmt == "flac": embed_lyrics_flac(fp, lyrics, is_synced)
                 elif fmt == "m4a": embed_lyrics_m4a(fp, lyrics, is_synced)
-                print(f"       {GREEN}✔ Letra sincronizada incrustada y alineada con la pista de audio.{NC}")
+                if is_synced:
+                    print(f"       {GREEN}✔ Letra sincronizada [{provider_name}] incrustada y alineada con la pista de audio.{NC}")
+                else:
+                    print(f"       {YELLOW}✔ Letra en texto plano [{provider_name}] incrustada en la pista de audio.{NC}")
             count_processed += 1
         else:
-            print(f"       {YELLOW}⚠ No se encontraron letras sincronizadas con esta pista de audio.{NC}")
+            print(f"       {YELLOW}⚠ No se encontró letra disponible para esta pista de audio.{NC}")
             count_notfound += 1
 
     except Exception as e:
         print(f"       {RED}✘ Error procesando archivo: {e}{NC}")
 
-print(f"\n  {BOLD}Resumen de Letras Sincronizadas:{NC}")
-print(f"  → {GREEN}Sincronizadas incrustadas:{NC} {count_processed}")
-print(f"  → {CYAN}Ya sincronizadas:{NC}        {count_already}")
-print(f"  → {YELLOW}Sin letra sincronizada:{NC}  {count_notfound}")
+print(f"\n  {BOLD}Resumen de Letras:{NC}")
+print(f"  → {GREEN}Letras incrustadas/guardadas:{NC} {count_processed}")
+print(f"  → {CYAN}Ya sincronizadas previamente:{NC} {count_already}")
+print(f"  → {YELLOW}Sin letra encontrada:{NC}        {count_notfound}")
 PYEOF
 }
 
@@ -450,11 +504,11 @@ PYEOF
 #  POST-PROCESO DE METADATOS
 # ═══════════════════════════════════════════════════════════════
 fix_metadata() {
-    local dir="$1" fmt="$2"
+    local dir="$1" fmt="$2" session_file="$3"
     python3 -c "import mutagen" 2>/dev/null || return 0
 
-    python3 - "$dir" "$fmt" <<'PYEOF'
-import sys, re
+    python3 - "$dir" "$fmt" "$session_file" <<'PYEOF'
+import sys, os, re
 from pathlib import Path
 
 try:
@@ -467,11 +521,28 @@ except ImportError:
 
 target = Path(sys.argv[1])
 fmt = sys.argv[2]
+session_file = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else ""
 PATTERN = re.compile(r'^(?P<artist>.+?)\s*[-–—]\s*(?P<title>.+)$')
 ext = {"mp3": ".mp3", "flac": ".flac", "m4a": ".m4a"}.get(fmt, f".{fmt}")
+
+files_to_check = []
+if session_file and os.path.isfile(session_file):
+    with open(session_file, 'r', encoding='utf-8', errors='ignore') as sf:
+        for line in sf:
+            raw_p = line.strip()
+            if raw_p:
+                p = Path(raw_p)
+                if p.is_file() and p.suffix.lower() == ext.lower() and p not in files_to_check:
+                    files_to_check.append(p)
+else:
+    if target.is_file():
+        files_to_check = [target] if target.suffix.lower() == ext.lower() else []
+    elif target.is_dir():
+        files_to_check = sorted([f for f in target.rglob("*") if f.is_file() and f.suffix.lower() == ext.lower()])
+
 count = 0
 
-for fp in sorted(target.rglob(f"*{ext}")):
+for fp in files_to_check:
     try:
         if fmt == "mp3":
             MP3(fp)
@@ -532,20 +603,22 @@ menu() {
         echo "  ╚══════════════════════════════════════════════════╝${NC}"
         echo -e "  ${BOLD}Perfil:${NC}      $PROFILE"
         echo -e "  ${BOLD}Duración:${NC}    >${DUR_MIN}s y ≤ $((DUR_MAX/60))m $((DUR_MAX%60))s"
-        echo -e "  ${BOLD}Paralelo:${NC}    ${PARALLEL_JOBS} worker(s) $( (( PARALLEL_JOBS > 1 )) && echo "(activo)" || echo "(secuencial)" )"
-        echo -e "  ${BOLD}Letras:${NC}      ${FETCH_LYRICS:+✔ ON}${FETCH_LYRICS:-✘ OFF} (${LYRICS_MODE}) [${LRCLIB_HOST}]"
+        if [[ "$FETCH_LYRICS" == "true" ]]; then
+            echo -e "  ${BOLD}Letras:${NC}      ${GREEN}✔ ON${NC} (${LYRICS_MODE}) [LRCLIB + Multi-Web]"
+        else
+            echo -e "  ${BOLD}Letras:${NC}      ${RED}✘ OFF${NC}"
+        fi
         echo -e "  ${BOLD}Álbum:${NC}       $(album_layout_label)"
         echo -e "  ${BOLD}Portada:${NC}     ${COVER_LOCAL:-AUTO (thumbnail)}"
         echo ""
         echo -e "  ${CYAN}1)${NC} Descargar audio"
         echo -e "  ${CYAN}2)${NC} Configurar calidad"
         echo -e "  ${CYAN}3)${NC} Configurar límites de duración"
-        echo -e "  ${CYAN}4)${NC} Configurar descargas paralelas"
-        echo -e "  ${CYAN}5)${NC} Configurar carpeta de álbum"
-        echo -e "  ${CYAN}6)${NC} Configurar portada manual"
-        echo -e "  ${CYAN}7)${NC} Configurar LETRAS (LRCLib)"
-        echo -e "  ${CYAN}8)${NC} Guía de calidad"
-        echo -e "  ${CYAN}9)${NC} Abrir carpeta downloads"
+        echo -e "  ${CYAN}4)${NC} Configurar carpeta de álbum"
+        echo -e "  ${CYAN}5)${NC} Configurar portada manual"
+        echo -e "  ${CYAN}6)${NC} Configurar LETRAS (LRCLib & Multi-Web)"
+        echo -e "  ${CYAN}7)${NC} Guía de calidad"
+        echo -e "  ${CYAN}8)${NC} Abrir carpeta downloads"
         echo -e "  ${CYAN}0)${NC} Salir"
         echo ""
         read -rp "  Opción: " op
@@ -553,12 +626,11 @@ menu() {
             1) menu_download ;;
             2) menu_quality ;;
             3) menu_duration ;;
-            4) menu_parallel ;;
-            5) menu_album_layout ;;
-            6) menu_cover ;;
-            7) menu_lyrics ;;
-            8) menu_guide ;;
-            9) xdg-open "$DOWNLOADS" 2>/dev/null || thunar "$DOWNLOADS" 2>/dev/null || { echo -e "  ${CYAN}$DOWNLOADS${NC}"; sleep 1; } ;;
+            4) menu_album_layout ;;
+            5) menu_cover ;;
+            6) menu_lyrics ;;
+            7) menu_guide ;;
+            8) xdg-open "$DOWNLOADS" 2>/dev/null || thunar "$DOWNLOADS" 2>/dev/null || { echo -e "  ${CYAN}$DOWNLOADS${NC}"; sleep 1; } ;;
             0) echo -e "\n  ${GREEN}¡Hasta luego!${NC}\n"; exit 0 ;;
             *) echo -e "  ${RED}Opción inválida.${NC}"; sleep 1 ;;
         esac
@@ -616,33 +688,6 @@ menu_duration() {
     fi
     DUR_MIN="$dmin"; DUR_MAX="$dmax"
     echo -e "\n  ${GREEN}✔ Rango: >${DUR_MIN}s y ≤${DUR_MAX}s${NC}"
-    sleep 1
-}
-
-# ═══════════════════════════════════════════════════════════════
-#  DESCARGAS PARALELAS
-# ═══════════════════════════════════════════════════════════════
-menu_parallel() {
-    clear
-    echo -e "${BOLD}${CYAN}══ Descargas paralelas ══${NC}\n"
-    echo -e "  Cuántas canciones se descargan ${BOLD}al mismo tiempo${NC} en playlists/álbumes."
-    echo -e "  Workers actuales: ${BOLD}${PARALLEL_JOBS}${NC}"
-    echo ""
-    echo -e "  ${CYAN}Recomendaciones:${NC}"
-    echo -e "   1 → Secuencial (sin paralelismo, comportamiento clásico)"
-    echo -e "   3 → Equilibrado  ${GREEN}← recomendado${NC}"
-    echo -e "   5 → Rápido (más CPU/RAM/ancho de banda)"
-    echo -e "   8 → Máximo (puede fallar si la fuente limita conexiones)"
-    echo ""
-    read -rp "  Número de workers [1-8] (Enter=${PARALLEL_JOBS}): " n
-    if [[ -z "$n" ]]; then
-        echo -e "  ${GREEN}Sin cambios.${NC}"
-    elif [[ "$n" =~ ^[1-8]$ ]]; then
-        PARALLEL_JOBS="$n"
-        echo -e "  ${GREEN}✔ Workers: ${PARALLEL_JOBS}${NC}"
-    else
-        echo -e "  ${RED}Inválido. Elige entre 1 y 8.${NC}"
-    fi
     sleep 1
 }
 
@@ -844,19 +889,6 @@ detected_type_label() {
 }
 
 # ═══════════════════════════════════════════════════════════════
-#  BARRA DE PROGRESO
-# ═══════════════════════════════════════════════════════════════
-_pbar() {
-    local pct=0 bar="" i
-    (( total > 0 )) && pct=$(( done * 100 / total ))
-    for (( i=0; i<25; i++ )); do
-        (( i < pct / 4 )) && bar+="█" || bar+="░"
-    done
-    printf '\r  [%s] %3d%%  %d/%d  ✔ %d  ✘ %d   ' \
-        "$bar" "$pct" "$done" "$total" "$ok" "$err"
-}
-
-# ═══════════════════════════════════════════════════════════════
 #  DESCARGA
 # ═══════════════════════════════════════════════════════════════
 menu_download() {
@@ -882,12 +914,30 @@ menu_download() {
         echo -e "  ${GREEN}✔ Detectado:${NC} ${BOLD}$(detected_type_label "$type_mode")${NC}"
         [[ -n "$DETECTED_TITLE" ]] && echo -e "  ${BOLD}Nombre:${NC} $DETECTED_TITLE"
         [[ -n "$DETECTED_COUNT" ]] && echo -e "  ${BOLD}Elementos:${NC} $DETECTED_COUNT"
-
         echo ""
-        read -rp "  Carpeta destino (Enter=Music): " folder
-        [[ -z "$folder" ]] && folder="Music"
-        folder="$(safe_name "$folder")"
-        local DEST="$DOWNLOADS/$folder"
+        local cur_display
+        if [[ "$LAST_DOWNLOAD_FOLDER" == /* ]]; then
+            cur_display="$LAST_DOWNLOAD_FOLDER"
+        else
+            cur_display="$DOWNLOADS/${LAST_DOWNLOAD_FOLDER:-Music}"
+        fi
+        echo -e "  ${BOLD}Ruta de guardado actual:${NC} ${CYAN}${cur_display}${NC}"
+        read -rp "  ¿Guardar en ruta actual o escribir otra? (Enter=mantener actual): " folder_choice
+        if [[ -n "$folder_choice" ]]; then
+            if [[ "$folder_choice" == /* ]]; then
+                LAST_DOWNLOAD_FOLDER="$folder_choice"
+            else
+                LAST_DOWNLOAD_FOLDER="$(safe_name "$folder_choice")"
+            fi
+        fi
+        [[ -z "$LAST_DOWNLOAD_FOLDER" ]] && LAST_DOWNLOAD_FOLDER="Music"
+
+        local DEST
+        if [[ "$LAST_DOWNLOAD_FOLDER" == /* ]]; then
+            DEST="$LAST_DOWNLOAD_FOLDER"
+        else
+            DEST="$DOWNLOADS/$LAST_DOWNLOAD_FOLDER"
+        fi
         mkdir -p "$DEST"
 
         local ARCHIVE="$DEST/.otterrip_archive"
@@ -961,114 +1011,51 @@ menu_download() {
         [[ "$FETCH_LYRICS" == "true" ]] && echo -e "  Letras:   ${MAGENTA}Activas [${LRCLIB_HOST}] (${LYRICS_MODE})${NC}"
 
         # ════════════════════════════════════════════════════════
-        #  MODO PARALELO
+        #  DESCARGA CON YT-DLP
         # ════════════════════════════════════════════════════════
-        if (( PARALLEL_JOBS > 1 )) && [[ "$type_mode" != "song" ]]; then
+        echo -e "  Modo:     ${CYAN}Descarga directa${NC}"
+        [[ "$type_mode" == "album" ]] \
+            && echo -e "  Álbum:    ${MAGENTA}$(album_layout_label)${NC}"
+        echo -e "  ${YELLOW}Los elementos con error se omiten y yt-dlp continúa.${NC}"
+        echo ""
 
-            echo -e "  Modo:     ${MAGENTA}${BOLD}PARALELO — ${PARALLEL_JOBS} workers${NC}"
-            echo ""
-            echo -e "  ${YELLOW}⟳ Obteniendo lista de elementos...${NC}"
+        local SESSION_FILES
+        SESSION_FILES="$(mktemp /tmp/otterrip_session_XXXXXX.txt 2>/dev/null || mktemp)"
 
-            local -a ITEM_URLS
-            mapfile -t ITEM_URLS < <(
-                yt-dlp \
-                    --flat-playlist \
-                    --print "%(url)s" \
-                    --ignore-errors \
-                    --quiet \
-                    "$url" 2>/dev/null
-            )
+        local -a CMD=(
+            yt-dlp
+            "${COMMON_FLAGS[@]}"
+            "$PLFLAG"
+            --print-to-file "after_move:filepath" "$SESSION_FILES"
+            --progress
+            --newline
+            -o "$OUTTPL"
+        )
 
-            local total=${#ITEM_URLS[@]}
-
-            if (( total == 0 )); then
-                echo -e "  ${YELLOW}⚠ Sin elementos (¿ya descargados o URL inválida?).${NC}"
-                sleep 2; continue
-            fi
-
-            echo -e "  ${CYAN}${total} elemento(s) en cola${NC}\n"
-
-            local safe_title
-            safe_title="$(safe_name "$DETECTED_TITLE")"
-            local WOUTTPL
-            if [[ -n "$safe_title" ]]; then
-                WOUTTPL="$DEST/$safe_title/%(title)s [%(id)s].%(ext)s"
-            else
-                WOUTTPL="$DEST/%(title)s [%(id)s].%(ext)s"
-            fi
-
-            local -a WCMD=(
-                yt-dlp
-                --no-playlist
-                "${COMMON_FLAGS[@]}"
-                --no-progress
-                --quiet
-                -o "$WOUTTPL"
-            )
-
-            local running=0 done=0 ok=0 err=0
-
-            for (( i=0; i<total; i++ )); do
-                while (( running >= PARALLEL_JOBS )); do
-                    if wait -n 2>/dev/null; then (( ok++ )); else
-                        local wrc=$?
-                        (( wrc == 127 )) && break
-                        (( err++ ))
-                    fi
-                    (( running-- )); (( done++ ))
-                    _pbar
-                done
-
-                ( "${WCMD[@]}" "${ITEM_URLS[$i]}" ) &
-                (( running++ ))
-                _pbar
-            done
-
-            while (( running > 0 )); do
-                if wait -n 2>/dev/null; then (( ok++ )); else
-                    local wrc=$?
-                    (( wrc == 127 )) && break
-                    (( err++ ))
-                fi
-                (( running-- )); (( done++ ))
-                _pbar
-            done
-
-            printf '\n'
-
-        # ════════════════════════════════════════════════════════
-        #  MODO SECUENCIAL
-        # ════════════════════════════════════════════════════════
-        else
-            echo -e "  Modo:     ${CYAN}Secuencial${NC}"
-            [[ "$type_mode" == "album" ]] \
-                && echo -e "  Álbum:    ${MAGENTA}$(album_layout_label)${NC}"
-            echo -e "  ${YELLOW}Los elementos con error se omiten y yt-dlp continúa.${NC}"
-            echo ""
-
-            local -a CMD=(
-                yt-dlp
-                "${COMMON_FLAGS[@]}"
-                "$PLFLAG"
-                --progress
-                --newline
-                -o "$OUTTPL"
-            )
-
-            "${CMD[@]}" "$url"
-        fi
-
+        "${CMD[@]}" "$url"
         local status=$?
 
         # ── Post-proceso (Metadatos + Letras Web) ───────────────
-        echo ""
-        echo -e "  ${YELLOW}⚙${NC}  Reparando metadatos..."
-        fix_metadata "$DEST" "$AFMT"
-        
-        if [[ "$FETCH_LYRICS" == "true" ]]; then
-            echo -e "  ${YELLOW}⚙${NC}  Buscando e incrustando letras pista por pista..."
-            process_lyrics "$DEST" "$AFMT"
+        local new_count=0
+        if [[ -f "$SESSION_FILES" ]]; then
+            new_count=$(grep -c . "$SESSION_FILES" 2>/dev/null || echo 0)
         fi
+
+        if (( new_count > 0 )); then
+            echo ""
+            echo -e "  ${YELLOW}⚙${NC}  Reparando metadatos de ${new_count} nueva(s) pista(s)..."
+            fix_metadata "$DEST" "$AFMT" "$SESSION_FILES"
+            
+            if [[ "$FETCH_LYRICS" == "true" ]]; then
+                echo -e "  ${YELLOW}⚙${NC}  Buscando e incrustando letras de las pistas descargadas (${new_count} en cola)..."
+                process_lyrics "$DEST" "$AFMT" "$SESSION_FILES"
+            fi
+        else
+            echo ""
+            echo -e "  ${GREEN}✔ No hay pistas nuevas que requieran procesamiento (ya descargadas).${NC}"
+        fi
+
+        rm -f "$SESSION_FILES"
 
         echo ""
         if (( status == 0 )); then
@@ -1078,15 +1065,43 @@ menu_download() {
         fi
         echo -e "  Archivos en: ${CYAN}$DEST${NC}"
         echo ""
-        echo -e "  ${CYAN}1)${NC} Descargar más"
-        echo -e "  ${CYAN}2)${NC} Volver al menú principal"
-        echo -e "  ${CYAN}3)${NC} Salir"
+        echo -e "  ${CYAN}1)${NC} Descargar más (misma ruta: ${BOLD}${LAST_DOWNLOAD_FOLDER}${NC})"
+        echo -e "  ${CYAN}2)${NC} Descargar más en OTRA ruta"
+        echo -e "  ${CYAN}3)${NC} Volver al menú principal"
+        echo -e "  ${CYAN}4)${NC} Salir"
         echo ""
-        read -rp "  Opción: " post_op
+        read -rp "  Opción (Enter=1): " post_op
+        [[ -z "$post_op" ]] && post_op="1"
         case "$post_op" in
-            1) seguir=true ;;
-            3) echo -e "\n  ${GREEN}¡Hasta luego!${NC}\n"; exit 0 ;;
-            *) seguir=false ;;
+            1) 
+                seguir=true 
+                ;;
+            2) 
+                seguir=true
+                echo ""
+                local cur_p
+                if [[ "$LAST_DOWNLOAD_FOLDER" == /* ]]; then
+                    cur_p="$LAST_DOWNLOAD_FOLDER"
+                else
+                    cur_p="$DOWNLOADS/$LAST_DOWNLOAD_FOLDER"
+                fi
+                echo -e "  ${BOLD}Ruta actual:${NC} ${CYAN}$cur_p${NC}"
+                read -rp "  Ingresa la nueva carpeta o ruta (Enter=mantener actual): " new_dest
+                if [[ -n "$new_dest" ]]; then
+                    if [[ "$new_dest" == /* ]]; then
+                        LAST_DOWNLOAD_FOLDER="$new_dest"
+                    else
+                        LAST_DOWNLOAD_FOLDER="$(safe_name "$new_dest")"
+                    fi
+                fi
+                ;;
+            4) 
+                echo -e "\n  ${GREEN}¡Hasta luego!${NC}\n"
+                exit 0 
+                ;;
+            *) 
+                seguir=false 
+                ;;
         esac
     done
 }

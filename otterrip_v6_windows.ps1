@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════
-#  OtterRip v5 — Descargador de audio · Windows (PowerShell)
+#  Download-music v6 — Descargador de audio · Windows (PowerShell)
 #  + Descargas paralelas (job pool)
 #  + Selector de carpeta de destino (ventana de Windows)
 # ═══════════════════════════════════════════════════════════════

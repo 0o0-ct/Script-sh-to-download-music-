@@ -46,10 +46,8 @@ OTTERRIP_CONFIG_DIR="${OTTERRIP_CONFIG_DIR:-$(xdg_dir XDG_CONFIG_HOME .config)/o
 OTTERRIP_DATA_DIR="${OTTERRIP_DATA_DIR:-$(xdg_dir XDG_DATA_HOME .local/share)/otterrip}"
 OTTERRIP_STATE_DIR="${OTTERRIP_STATE_DIR:-$(xdg_dir XDG_STATE_HOME .local/state)/otterrip}"
 OTTERRIP_CACHE_DIR="${OTTERRIP_CACHE_DIR:-$(xdg_dir XDG_CACHE_HOME .cache)/otterrip}"
+DEPS_CACHE_FILE="$OTTERRIP_CACHE_DIR/deps_verified.env"
 export OTTERRIP_CONFIG_DIR OTTERRIP_DATA_DIR OTTERRIP_STATE_DIR OTTERRIP_CACHE_DIR
-mkdir -p -- "$OTTERRIP_CONFIG_DIR" "$OTTERRIP_DATA_DIR" "$OTTERRIP_STATE_DIR/sessions" \
-    "$OTTERRIP_CACHE_DIR" 2>/dev/null || true
-chmod 700 -- "$OTTERRIP_CONFIG_DIR" "$OTTERRIP_DATA_DIR" "$OTTERRIP_STATE_DIR" 2>/dev/null || true
 
 VENV_DIR="$OTTERRIP_DATA_DIR/venv"
 APP_ROOT="$OTTERRIP_DATA_DIR/app"
@@ -69,7 +67,22 @@ else
 fi
 DOWNLOADS="${DOWNLOADS%/}"
 [[ -n "$DOWNLOADS" ]] || DOWNLOADS="$SCRIPT_DIR/downloads"
-mkdir -p -- "$DOWNLOADS"
+
+# Crea los directorios de runtime y ajusta permisos. Solo se invoca desde
+# main() después de procesar --help/--version, para que hacer `source` del
+# script no produzca efectos secundarios en el entorno del llamante.
+init_runtime_dirs() {
+    mkdir -p -- "$OTTERRIP_CONFIG_DIR" "$OTTERRIP_DATA_DIR" "$OTTERRIP_STATE_DIR/sessions" \
+        "$OTTERRIP_CACHE_DIR" "$DOWNLOADS" 2>/dev/null || true
+    chmod 700 -- "$OTTERRIP_CONFIG_DIR" "$OTTERRIP_DATA_DIR" "$OTTERRIP_STATE_DIR" 2>/dev/null || true
+}
+
+# Helpers de salida basados en printf (evitan que secuencias como \n o \c en
+# variables de usuario sean interpretadas por echo -e).
+msg_info() { printf '  %sℹ%s %s\n' "${CYAN:-}" "${NC:-}" "$*"; }
+msg_ok()   { printf '  %s✔%s %s\n' "${GREEN:-}" "${NC:-}" "$*"; }
+msg_warn() { printf '  %s⚠%s %s\n' "${YELLOW:-}" "${NC:-}" "$*"; }
+msg_err()  { printf '  %s✘%s %s\n' "${RED:-}" "${NC:-}" "$*" >&2; }
 
 backend_is_valid() {
     local root="${1-}" version_file="${1-}/lib/otterrip_core/VERSION"
@@ -107,7 +120,7 @@ try:
     with tarfile.open(archive_path, "r:gz") as archive:
         seen = set()
         for member in archive.getmembers():
-            name = member.name.removeprefix("./")
+            name = member.name[2:] if member.name.startswith("./") else member.name
             path = PurePosixPath(name)
             if (
                 not name
@@ -121,7 +134,7 @@ try:
             ):
                 raise ValueError(f"unsafe archive entry: {member.name!r}")
             seen.add(name)
-except (OSError, tarfile.TarError, ValueError):
+except (OSError, tarfile.TarError, ValueError, AttributeError):
     sys.exit(1)
 PYEOF
 }
@@ -647,7 +660,7 @@ ask_path() {
     [[ -z "$raw" ]] && raw="$default"
     [[ -z "$raw" ]] && return 1
     if [[ ! -e "$raw" ]]; then
-        echo -e "  ${RED}✘ No existe: $raw${NC}"
+        msg_err "No existe: $raw"
         return 1
     fi
     ASKED_PATH="$(realpath -- "$raw" 2>/dev/null || printf '%s' "$raw")"
@@ -985,7 +998,43 @@ provider_label() {
     printf '%s' "$base"
 }
 
+# Comprueba si la caché de dependencias es válida (menos de 24 h, ejecutables
+# presentes y versión coincidente). Devuelve 0 si se puede saltar la verificación.
+deps_cache_valid() {
+    [[ -f "$DEPS_CACHE_FILE" ]] || return 1
+    local now cache_time
+    now="$(date +%s)"
+    cache_time="$(stat -c %Y "$DEPS_CACHE_FILE" 2>/dev/null || echo 0)"
+    (( now - cache_time < 86400 )) || return 1
+    # shellcheck disable=SC1090
+    source "$DEPS_CACHE_FILE" 2>/dev/null || return 1
+    [[ "$CACHED_OTTERRIP_VERSION" == "$OTTERRIP_VERSION" ]] || return 1
+    [[ -x "${CACHED_PYBIN:-}" ]] || return 1
+    [[ -x "${CACHED_YTDLP_BIN:-}" ]] || return 1
+    command -v ffmpeg >/dev/null 2>&1 || return 1
+    command -v ffprobe >/dev/null 2>&1 || return 1
+    return 0
+}
+
+# Escribe la caché de dependencias tras una verificación exitosa.
+write_deps_cache() {
+    {
+        echo "CACHED_OTTERRIP_VERSION=$OTTERRIP_VERSION"
+        echo "CACHED_PYBIN=$PYBIN"
+        echo "CACHED_YTDLP_BIN=$YTDLP_BIN"
+        echo "CACHED_TIMESTAMP=$(date +%s)"
+    } > "$DEPS_CACHE_FILE" 2>/dev/null || true
+}
+
 install_deps() {
+    local force_full=false
+    [[ "${1-}" == "--check-deps" ]] && force_full=true
+
+    if [[ "$force_full" == "false" ]] && deps_cache_valid; then
+        msg_ok "Dependencias verificadas previamente (caché < 24 h)."
+        return 0
+    fi
+
     echo -e "\n${BOLD}${CYAN}══ Verificando dependencias ══${NC}\n"
 
     if ! command -v python3 >/dev/null 2>&1; then
@@ -1041,6 +1090,7 @@ install_deps() {
 
     echo -e "\n${GREEN}${BOLD}  Dependencias listas.${NC}\n"
     log_event INFO "dependencias OK (python=$PYBIN yt-dlp=$YTDLP_BIN)"
+    write_deps_cache
     sleep 0.6
 }
 
@@ -1670,10 +1720,10 @@ menu_lyrics() {
                     if [[ "$PYBIN" != "$VENV_DIR/bin/python" ]]; then
                         if create_venv; then
                             PYBIN="$VENV_DIR/bin/python"
-                            venv_pip_install -r "$SCRIPT_DIR/requirements.txt" || true
+                            venv_pip_install -r "$REQUIREMENTS_FILE" || true
                         fi
                     else
-                        venv_pip_install -r "$SCRIPT_DIR/requirements.txt" || true
+                        venv_pip_install -r "$REQUIREMENTS_FILE" || true
                     fi
                     refresh_syncedlyrics_state
                     if [[ "$SYNCEDLYRICS_AVAILABLE" == "true" ]]; then
@@ -1856,13 +1906,23 @@ run_parallel_download() {
     fi
 
     local ok=0 errors=0 skipped=0 finished=0 alive=0
+    local prev_logs_size=0
     while true; do
         ok=0
         for sf in "${worker_sessions[@]}"; do
             ok=$((ok + $(count_lines "$sf")))
         done
-        errors="$(count_log_pattern '^ERROR:' "${worker_logs[@]}")"
-        skipped="$(count_log_pattern "$SKIP_PATTERN" "${worker_logs[@]}")"
+        # Optimización: evitar recount (grep/sort -u) sobre todos los logs en
+        # cada iteración si su tamaño total no ha cambiado desde el segundo anterior.
+        local cur_logs_size=0 l
+        for l in "${worker_logs[@]}"; do
+            [[ -f "$l" ]] && cur_logs_size=$((cur_logs_size + $(stat -c %s "$l" 2>/dev/null || echo 0)))
+        done
+        if (( cur_logs_size != prev_logs_size )); then
+            errors="$(count_log_pattern '^ERROR:' "${worker_logs[@]}")"
+            skipped="$(count_log_pattern "$SKIP_PATTERN" "${worker_logs[@]}")"
+            prev_logs_size=$cur_logs_size
+        fi
         finished=$((ok + errors + skipped))
         (( finished > total )) && finished=$total
         draw_download_progress "$finished" "$total" "$ok" "$errors" "$skipped" "${#worker_pids[@]}"
@@ -2039,12 +2099,12 @@ _download_job_body() {
     local archive="$dest/.otterrip_archive" outtpl="" plflag=""
 
     if ! mkdir -p -- "$dest"; then
-        echo -e "  ${RED}✘ No se pudo crear la carpeta de destino: $dest${NC}"
+        msg_err "No se pudo crear la carpeta de destino: $dest"
         JOB_STATUS="failed"; JOB_CLASS="permanent"
         return 1
     fi
     if [[ ! -w "$dest" ]]; then
-        echo -e "  ${RED}✘ Sin permiso de escritura en: $dest${NC}"
+        msg_err "Sin permiso de escritura en: $dest"
         JOB_STATUS="failed"; JOB_CLASS="permanent"
         return 1
     fi
@@ -2411,7 +2471,7 @@ queue_run() {
         else
             dest="$(destination_display)"
         fi
-        echo -e "\n${BOLD}${CYAN}══ Cola: tarea #$id ══${NC}\n  $url"
+        printf '\n%s%s══ Cola: tarea #%s ══%s\n  %s\n' "$BOLD" "$CYAN" "$id" "$NC" "$url"
         detect_url_type "$url"
         type_mode="$DETECTED_TYPE"
         download_job "$url" "$type_mode" "$DETECTED_COUNT" "$dest" || true
@@ -2627,7 +2687,7 @@ menu_diagnostics() {
                 if confirm "¿Actualizar yt-dlp en el venv de OtterRip?"; then
                     if [[ "$PYBIN" != "$VENV_DIR/bin/python" ]]; then
                         create_venv && PYBIN="$VENV_DIR/bin/python" \
-                            && { libs_ok_for "$PYBIN" || venv_pip_install -r "$SCRIPT_DIR/requirements.txt"; }
+                            && { libs_ok_for "$PYBIN" || venv_pip_install -r "$REQUIREMENTS_FILE"; }
                     fi
                     if [[ "$PYBIN" == "$VENV_DIR/bin/python" ]]; then
                         venv_pip_install "yt-dlp[default]" || true
@@ -2638,7 +2698,7 @@ menu_diagnostics() {
                 fi
                 pause_enter
                 ;;
-            3) install_deps || true; pause_enter ;;
+            3) install_deps --check-deps || true; pause_enter ;;
             4) tail -n 30 -- "$LOG_FILE" 2>/dev/null || echo "  (registro vacío)"; pause_enter ;;
             5) recover_sessions; pause_enter ;;
             6)
@@ -2666,12 +2726,15 @@ usage() {
     cat <<EOF
 OtterRip $OTTERRIP_VERSION — descargador de audio con letras
 
-Uso: $(basename "$0") [opción]
-  (sin opción)   menú interactivo
-  --doctor       diagnóstico del sistema (puede descargar el backend)
-  --queue-run    procesa la cola de descargas sin menús
-  --version      muestra la versión
-  --help         esta ayuda
+Uso: $(basename "$0") [opción | URL [carpeta_destino]]
+  (sin opción)           menú interactivo
+  <URL> [carpeta_destino] descarga directa (no interactiva) y salida con código de retorno
+  --add|--enqueue <URL...> añade una o más URLs a la cola sin abrir el menú
+  --doctor               diagnóstico del sistema (puede descargar el backend)
+  --queue-run            procesa la cola de descargas sin menús
+  --check-deps           fuerza verificación completa de dependencias (ignora caché)
+  --version              muestra la versión
+  --help                 esta ayuda
 
 Variables: OTTERRIP_DOWNLOADS, PARALLEL_JOBS, OTTERRIP_ASSUME_YES=1, OTTERRIP_YTDLP
 EOF
@@ -2693,15 +2756,18 @@ main() {
         --doctor)
             select_python_readonly
             [[ -n "$PYBIN" ]] || { echo "python3 no encontrado."; return 13; }
+            python_version_ok || { echo "Python 3.9+ requerido para --doctor." >&2; return 1; }
             ensure_backend || return 1
             py_core doctor --dest "$DOWNLOADS"
             return $?
             ;;
         "") ;;
         --queue-run) ;;
+        --check-deps) install_deps --check-deps; return $? ;;
         *) echo "Opción desconocida: $1" >&2; usage >&2; return 2 ;;
     esac
 
+    init_runtime_dirs
     load_config || true
     if ! install_deps; then
         echo -e "\n${RED}No se pudo iniciar OtterRip: faltan dependencias.${NC}\n"
@@ -2709,6 +2775,27 @@ main() {
     fi
     refresh_syncedlyrics_state || true
     recover_sessions || true
+
+    # --add / --enqueue: añadir URLs a la cola sin menú interactivo.
+    if [[ "${1-}" == "--add" || "${1-}" == "--enqueue" ]]; then
+        shift || true
+        if (( $# == 0 )); then
+            echo "Espera al menos una URL." >&2
+            return 2
+        fi
+        py_core queue add "$@" --dest "$LAST_DOWNLOAD_FOLDER" || return 1
+        return 0
+    fi
+
+    # Descarga directa no interactiva: otterrip <URL> [carpeta_destino]
+    if is_http_url "${1-}"; then
+        local dl_dest="${2-$DOWNLOADS}"
+        dl_dest="$(expand_tilde "$(strip_wrapping_quotes "$dl_dest")")"
+        detect_url_type "$1"
+        download_job "$1" "$DETECTED_TYPE" "$DETECTED_COUNT" "$dl_dest" || return $?
+        print_job_summary "$dl_dest"
+        return 0
+    fi
 
     if [[ "${1-}" == "--queue-run" ]]; then
         queue_run

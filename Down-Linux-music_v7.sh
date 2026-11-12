@@ -28,6 +28,9 @@ fi
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
 LIB_DIR="$SCRIPT_DIR/lib"
+REQUIREMENTS_FILE="$SCRIPT_DIR/requirements.txt"
+BACKEND_SHA256="05e73302de6551cf11932bf339c04acf3bccd4386549d7a6681c641ec61c79cf"
+BACKEND_ARCHIVE_URL="https://raw.githubusercontent.com/0o0-ct/Script-sh-to-download-music-/v${OTTERRIP_VERSION}/packages/otterrip-backend-v${OTTERRIP_VERSION}.tar.gz"
 
 # ── Directorios XDG (los valores relativos se ignoran, según la especificación)
 xdg_dir() {
@@ -49,6 +52,8 @@ mkdir -p -- "$OTTERRIP_CONFIG_DIR" "$OTTERRIP_DATA_DIR" "$OTTERRIP_STATE_DIR/ses
 chmod 700 -- "$OTTERRIP_CONFIG_DIR" "$OTTERRIP_DATA_DIR" "$OTTERRIP_STATE_DIR" 2>/dev/null || true
 
 VENV_DIR="$OTTERRIP_DATA_DIR/venv"
+APP_ROOT="$OTTERRIP_DATA_DIR/app"
+APP_INSTALL_DIR="$APP_ROOT/v$OTTERRIP_VERSION"
 CONFIG_FILE="$OTTERRIP_CONFIG_DIR/config"
 LOG_FILE="$OTTERRIP_STATE_DIR/otterrip.log"
 SESSIONS_DIR="$OTTERRIP_STATE_DIR/sessions"
@@ -65,6 +70,163 @@ fi
 DOWNLOADS="${DOWNLOADS%/}"
 [[ -n "$DOWNLOADS" ]] || DOWNLOADS="$SCRIPT_DIR/downloads"
 mkdir -p -- "$DOWNLOADS"
+
+backend_is_valid() {
+    local root="${1-}" version_file="${1-}/lib/otterrip_core/VERSION"
+    local manifest="$root/lib/otterrip_core/REQUIRED_FILES" required found=false
+    [[ -f "$root/lib/otterrip_core/__main__.py" &&
+        -f "$root/lib/otterrip_core/REQUIRED_FILES" &&
+        -f "$root/requirements.txt" &&
+        -f "$version_file" ]] || return 1
+    [[ "$(<"$version_file")" == "$OTTERRIP_VERSION" ]] || return 1
+    while IFS= read -r required || [[ -n "$required" ]]; do
+        [[ -n "$required" ]] || continue
+        case "$required" in
+            /*|*..*|*[!A-Za-z0-9._/-]*) return 1 ;;
+        esac
+        [[ -f "$root/lib/otterrip_core/$required" ]] || return 1
+        found=true
+    done < "$manifest"
+    [[ "$found" == true ]]
+}
+
+set_backend_dir() {
+    LIB_DIR="$1/lib"
+    REQUIREMENTS_FILE="$1/requirements.txt"
+}
+
+backend_archive_paths_are_safe() {
+    local archive="${1-}" entry
+    tar -tzf "$archive" >/dev/null 2>&1 || return 1
+    while IFS= read -r entry; do
+        entry="${entry#./}"
+        [[ "$entry" != /* ]] || return 1
+        case "/$entry/" in
+            */../*) return 1 ;;
+        esac
+        case "$entry" in
+            lib|lib/*|requirements.txt) ;;
+            *) return 1 ;;
+        esac
+    done < <(tar -tzf "$archive")
+}
+
+sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum -- "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 -- "$1" | awk '{print $1}'
+    else
+        echo "No se encontró sha256sum ni shasum para verificar el backend." >&2
+        return 1
+    fi
+}
+
+download_backend_archive() {
+    local url="$BACKEND_ARCHIVE_URL" destination="${1-}"
+    if command -v curl >/dev/null 2>&1; then
+        curl --fail --location --silent --show-error --retry 2 \
+            --connect-timeout 15 --max-time 120 --proto '=https' \
+            --proto-redir '=https' "$url" --output "$destination"
+    elif command -v wget >/dev/null 2>&1; then
+        wget --https-only --timeout=20 --tries=3 --max-redirect=5 \
+            --output-document="$destination" "$url"
+    else
+        echo "Se necesita curl o wget para descargar el backend de OtterRip." >&2
+        return 1
+    fi
+}
+
+ensure_backend() {
+    local tmp_dir="" archive="" stage="" actual_hash="" backup=""
+    if backend_is_valid "$SCRIPT_DIR"; then
+        set_backend_dir "$SCRIPT_DIR"
+        return 0
+    fi
+    if backend_is_valid "$APP_INSTALL_DIR"; then
+        set_backend_dir "$APP_INSTALL_DIR"
+        return 0
+    fi
+
+    echo "Descargando el backend OtterRip $OTTERRIP_VERSION desde GitHub..."
+    if [[ ! "$BACKEND_SHA256" =~ ^[[:xdigit:]]{64}$ ]]; then
+        echo "La versión $OTTERRIP_VERSION no tiene un SHA-256 de backend válido." >&2
+        return 1
+    fi
+    if ! mkdir -p -- "$APP_ROOT"; then
+        echo "No se pudo crear el directorio de instalación: $APP_ROOT" >&2
+        return 1
+    fi
+    tmp_dir="$(mktemp -d "$APP_ROOT/.v${OTTERRIP_VERSION}.XXXXXX")" || {
+        echo "No se pudo crear un directorio temporal para instalar el backend." >&2
+        return 1
+    }
+    archive="$tmp_dir/backend.tar.gz"
+    stage="$tmp_dir/install"
+    if ! download_backend_archive "$archive"; then
+        echo "No se pudo descargar el backend. Revisa la conexión o conserva una instalación local válida." >&2
+        rm -rf -- "$tmp_dir"
+        return 1
+    fi
+    if ! actual_hash="$(sha256_file "$archive")" || [[ "$actual_hash" != "$BACKEND_SHA256" ]]; then
+        echo "La verificación SHA-256 del backend falló; no se instalará el archivo." >&2
+        rm -rf -- "$tmp_dir"
+        return 1
+    fi
+    if ! backend_archive_paths_are_safe "$archive"; then
+        echo "El paquete del backend contiene rutas inválidas o no se pudo inspeccionar." >&2
+        rm -rf -- "$tmp_dir"
+        return 1
+    fi
+    if ! mkdir -p -- "$stage" ||
+        ! tar -xzf "$archive" --no-same-owner --no-same-permissions -C "$stage" ||
+        ! backend_is_valid "$stage"; then
+        echo "El paquete descargado no contiene un backend OtterRip $OTTERRIP_VERSION válido." >&2
+        rm -rf -- "$tmp_dir"
+        return 1
+    fi
+    if command -v python3 >/dev/null 2>&1 &&
+        ! python3 - "$stage/lib/otterrip_core" <<'PYEOF'
+import ast
+from pathlib import Path
+import sys
+
+for source in Path(sys.argv[1]).rglob("*.py"):
+    ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+PYEOF
+    then
+        echo "La comprobación de sintaxis del backend descargado falló." >&2
+        rm -rf -- "$tmp_dir"
+        return 1
+    fi
+
+    if [[ -e "$APP_INSTALL_DIR" || -L "$APP_INSTALL_DIR" ]]; then
+        backup="$tmp_dir/previous-install"
+        if ! mv -- "$APP_INSTALL_DIR" "$backup"; then
+            echo "No se pudo preservar la instalación anterior del backend." >&2
+            rm -rf -- "$tmp_dir"
+            return 1
+        fi
+    fi
+    if ! mv -- "$stage" "$APP_INSTALL_DIR"; then
+        if [[ -n "$backup" ]]; then
+            if ! mv -- "$backup" "$APP_INSTALL_DIR"; then
+                echo "No se pudo restaurar el backend anterior; se conserva en $backup." >&2
+                return 1
+            fi
+        fi
+        echo "No se pudo activar la instalación nueva del backend." >&2
+        rm -rf -- "$tmp_dir"
+        return 1
+    fi
+    rm -rf -- "$tmp_dir"
+    if ! backend_is_valid "$APP_INSTALL_DIR"; then
+        echo "La instalación del backend no superó la verificación final." >&2
+        return 1
+    fi
+    set_backend_dir "$APP_INSTALL_DIR"
+    echo "Backend OtterRip $OTTERRIP_VERSION instalado en $APP_INSTALL_DIR."
+}
 
 # ── Estado global ──────────────────────────────────────────────
 AFMT="mp3"
@@ -521,7 +683,7 @@ python_version_ok() {
 }
 
 libs_ok_for() {
-    "${1-python3}" -c 'import mutagen, requests' >/dev/null 2>&1
+    "${1-python3}" -c 'import aiohttp, mutagen, requests' >/dev/null 2>&1
 }
 
 # Instala paquetes Python SOLO dentro del venv de OtterRip.
@@ -590,7 +752,7 @@ ensure_python_env() {
 
     if ! libs_ok_for "$PYBIN"; then
         echo "  ${YELLOW}⚙${NC} Instalando librerías Python en el venv: mutagen, requests..."
-        venv_pip_install -r "$SCRIPT_DIR/requirements.txt" || {
+        venv_pip_install -r "$REQUIREMENTS_FILE" || {
             echo "    Alternativa con paquetes del sistema (sin venv):"
             echo "      Debian/Ubuntu: sudo apt install python3-mutagen python3-requests"
             echo "      Arch:          sudo pacman -S python-mutagen python-requests"
@@ -619,7 +781,7 @@ ensure_ytdlp() {
         echo "  ${YELLOW}⚙${NC} Instalando yt-dlp (con yt-dlp-ejs) en el venv..."
         if [[ "$PYBIN" != "$VENV_DIR/bin/python" ]]; then
             create_venv && PYBIN="$VENV_DIR/bin/python" || return 1
-            libs_ok_for "$PYBIN" || venv_pip_install -r "$SCRIPT_DIR/requirements.txt" || return 1
+            libs_ok_for "$PYBIN" || venv_pip_install -r "$REQUIREMENTS_FILE" || return 1
         fi
         venv_pip_install "yt-dlp[default]" || venv_pip_install yt-dlp || {
             echo "    Alternativa: paquete de tu distribución (pacman -S yt-dlp, apt install yt-dlp...)"
@@ -741,6 +903,10 @@ install_deps() {
     echo "  ${GREEN}✔${NC} ffmpeg $(ffmpeg -version 2>&1 | head -1 | awk '{print $3}')"
 
     ensure_python_env || return 1
+    if ! py_core --help >/dev/null 2>&1; then
+        echo "  ${RED}✘${NC} El backend Python instalado no pasó la prueba de inicio."
+        return 1
+    fi
     echo "  ${GREEN}✔${NC} mutagen + requests listos ($([[ "$PYBIN" == "$VENV_DIR/bin/python" ]] && echo 'venv aislado' || echo 'Python del sistema'))"
     ensure_ytdlp || return 1
     setup_js_runtime
@@ -1380,7 +1546,7 @@ menu_lyrics() {
                     if [[ "$PYBIN" != "$VENV_DIR/bin/python" ]]; then
                         if create_venv; then
                             PYBIN="$VENV_DIR/bin/python"
-                            venv_pip_install -r "$SCRIPT_DIR/requirements.txt" || true
+                            venv_pip_install -r "$REQUIREMENTS_FILE" || true
                         fi
                     fi
                     [[ "$PYBIN" == "$VENV_DIR/bin/python" ]] && { venv_pip_install syncedlyrics || true; }
@@ -2336,7 +2502,7 @@ menu_diagnostics() {
                 if confirm "¿Actualizar yt-dlp en el venv de OtterRip?"; then
                     if [[ "$PYBIN" != "$VENV_DIR/bin/python" ]]; then
                         create_venv && PYBIN="$VENV_DIR/bin/python" \
-                            && { libs_ok_for "$PYBIN" || venv_pip_install -r "$SCRIPT_DIR/requirements.txt"; }
+                            && { libs_ok_for "$PYBIN" || venv_pip_install -r "$REQUIREMENTS_FILE"; }
                     fi
                     if [[ "$PYBIN" == "$VENV_DIR/bin/python" ]]; then
                         venv_pip_install "yt-dlp[default]" || true
@@ -2377,7 +2543,7 @@ OtterRip $OTTERRIP_VERSION — descargador de audio con letras
 
 Uso: $(basename "$0") [opción]
   (sin opción)   menú interactivo
-  --doctor       diagnóstico del sistema (no instala nada)
+  --doctor       diagnóstico del sistema (puede descargar el backend)
   --queue-run    procesa la cola de descargas sin menús
   --version      muestra la versión
   --help         esta ayuda
@@ -2388,10 +2554,13 @@ EOF
 
 # Para --doctor y pruebas: elige intérprete sin instalar nada.
 select_python_readonly() {
-    if [[ -x "$VENV_DIR/bin/python" ]]; then
+    if [[ -x "$VENV_DIR/bin/python" ]] && libs_ok_for "$VENV_DIR/bin/python"; then
         PYBIN="$VENV_DIR/bin/python"
-    else
+    elif libs_ok_for python3; then
         PYBIN="$(command -v python3 2>/dev/null || true)"
+    else
+        echo "Las dependencias Python del backend no están instaladas; ejecuta OtterRip normalmente para prepararlas." >&2
+        return 1
     fi
 }
 
@@ -2400,7 +2569,8 @@ main() {
         --version|-V) printf 'OtterRip %s\n' "$OTTERRIP_VERSION"; return 0 ;;
         --help|-h) usage; return 0 ;;
         --doctor)
-            select_python_readonly
+            ensure_backend || return 1
+            select_python_readonly || return 1
             [[ -n "$PYBIN" ]] || { echo "python3 no encontrado."; return 13; }
             py_core doctor --dest "$DOWNLOADS"
             return $?
@@ -2410,6 +2580,7 @@ main() {
         *) echo "Opción desconocida: $1" >&2; usage >&2; return 2 ;;
     esac
 
+    ensure_backend || return 1
     load_config || true
     if ! install_deps; then
         echo -e "\n${RED}No se pudo iniciar OtterRip: faltan dependencias.${NC}\n"

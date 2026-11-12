@@ -47,6 +47,8 @@ OTTERRIP_DATA_DIR="${OTTERRIP_DATA_DIR:-$(xdg_dir XDG_DATA_HOME .local/share)/ot
 OTTERRIP_STATE_DIR="${OTTERRIP_STATE_DIR:-$(xdg_dir XDG_STATE_HOME .local/state)/otterrip}"
 OTTERRIP_CACHE_DIR="${OTTERRIP_CACHE_DIR:-$(xdg_dir XDG_CACHE_HOME .cache)/otterrip}"
 DEPS_CACHE_FILE="$OTTERRIP_CACHE_DIR/deps_verified.env"
+COOKIES_BROWSER="${OTTERRIP_COOKIES_BROWSER:-}"
+COOKIES_FILE="${OTTERRIP_COOKIES_FILE:-}"
 export OTTERRIP_CONFIG_DIR OTTERRIP_DATA_DIR OTTERRIP_STATE_DIR OTTERRIP_CACHE_DIR
 
 VENV_DIR="$OTTERRIP_DATA_DIR/venv"
@@ -714,6 +716,10 @@ load_config() {
                 if [[ -n "$value" && "$value" != *$'\t'* ]]; then LAST_DOWNLOAD_FOLDER="$value"; fi ;;
             COVER_LOCAL)
                 if [[ -z "$value" || -f "$value" ]]; then COVER_LOCAL="$value"; fi ;;
+            COOKIES_BROWSER)
+                if [[ "$value" =~ ^[a-zA-Z0-9_.:+-]*$ ]]; then COOKIES_BROWSER="$value"; fi ;;
+            COOKIES_FILE)
+                if [[ -z "$value" || -f "$value" ]]; then COOKIES_FILE="$value"; fi ;;
         esac
     done < "$CONFIG_FILE"
     return 0
@@ -726,7 +732,7 @@ save_config() {
         echo "# OtterRip — generado automáticamente. Puedes editarlo; los valores inválidos se ignoran."
         for key in QUALITY_CHOICE DUR_MIN DUR_MAX PARALLEL_JOBS ALBUM_LAYOUT FETCH_LYRICS LYRICS_MODE \
                    LRCLIB_HOST LYRICS_LANG LYRICS_PROVIDERS LYRICS_PREFER_SYNCED LYRICS_UPGRADE_PLAIN \
-                   LAST_DOWNLOAD_FOLDER COVER_LOCAL; do
+                   LAST_DOWNLOAD_FOLDER COVER_LOCAL COOKIES_BROWSER COOKIES_FILE; do
             printf '%s=%s\n' "$key" "${!key}"
         done
     } > "$tmp" 2>/dev/null || { rm -f -- "$tmp"; return 0; }
@@ -1009,6 +1015,9 @@ deps_cache_valid() {
     # shellcheck disable=SC1090
     source "$DEPS_CACHE_FILE" 2>/dev/null || return 1
     [[ "$CACHED_OTTERRIP_VERSION" == "$OTTERRIP_VERSION" ]] || return 1
+    # El backend debe seguir siendo válido en disco; si se borró, invalida caché.
+    [[ -n "${CACHED_LIB_DIR:-}" ]] || return 1
+    backend_is_valid "$(dirname -- "$CACHED_LIB_DIR")" || return 1
     [[ -x "${CACHED_PYBIN:-}" ]] || return 1
     [[ -x "${CACHED_YTDLP_BIN:-}" ]] || return 1
     command -v ffmpeg >/dev/null 2>&1 || return 1
@@ -1017,11 +1026,21 @@ deps_cache_valid() {
 }
 
 # Escribe la caché de dependencias tras una verificación exitosa.
+# Guarda suficiente estado para restaurar el entorno sin repetir comprobaciones pesadas.
 write_deps_cache() {
     {
         echo "CACHED_OTTERRIP_VERSION=$OTTERRIP_VERSION"
+        echo "CACHED_LIB_DIR=$LIB_DIR"
+        echo "CACHED_REQUIREMENTS_FILE=$REQUIREMENTS_FILE"
         echo "CACHED_PYBIN=$PYBIN"
         echo "CACHED_YTDLP_BIN=$YTDLP_BIN"
+        echo "CACHED_SYNCEDLYRICS_AVAILABLE=${SYNCEDLYRICS_AVAILABLE:-false}"
+        local _js=""
+        if ((${#JS_RUNTIME_ARGS[@]})); then
+            _js="$(printf ' %s' "${JS_RUNTIME_ARGS[@]}")"
+            _js="${_js:1}"
+        fi
+        echo "CACHED_JS_ARGS=$_js"
         echo "CACHED_TIMESTAMP=$(date +%s)"
     } > "$DEPS_CACHE_FILE" 2>/dev/null || true
 }
@@ -1031,6 +1050,16 @@ install_deps() {
     [[ "${1-}" == "--check-deps" ]] && force_full=true
 
     if [[ "$force_full" == "false" ]] && deps_cache_valid; then
+        # Restaurar todo el estado de ejecución desde la caché, igual que en el flujo completo.
+        set_backend_dir "$(dirname -- "$CACHED_LIB_DIR")" || return 1
+        PYBIN="$CACHED_PYBIN"
+        export YTDLP_BIN="$CACHED_YTDLP_BIN"
+        SYNCEDLYRICS_AVAILABLE="${CACHED_SYNCEDLYRICS_AVAILABLE:-false}"
+        JS_RUNTIME_ARGS=()
+        if [[ -n "${CACHED_JS_ARGS:-}" ]]; then
+            # shellcheck disable=SC2206
+            JS_RUNTIME_ARGS=(${CACHED_JS_ARGS})
+        fi
         msg_ok "Dependencias verificadas previamente (caché < 24 h)."
         return 0
     fi
@@ -1117,12 +1146,14 @@ detect_url_type() {
 
     mapfile -t lines < <(
         DETECT_URL="$url" DETECT_NO_PLAYLIST="$no_playlist" YTDLP_BIN="$YTDLP_BIN" \
+        DETECT_JS_ARGS="${JS_RUNTIME_ARGS[*]:-}" \
         "${PYBIN:-python3}" - <<'PYEOF'
 import json, os, re, subprocess, sys
 
 url = os.environ.get("DETECT_URL", "")
 no_playlist = os.environ.get("DETECT_NO_PLAYLIST", "0") == "1"
 ytdlp_bin = os.environ.get("YTDLP_BIN", "").strip()
+js_args = [a for a in os.environ.get("DETECT_JS_ARGS", "").split() if a]
 
 def url_hint(value: str) -> str:
     u = value.lower()
@@ -1166,8 +1197,10 @@ def try_run(flat: bool):
     args = base + [
         "--playlist-items", "1",
         "--skip-download", "--no-warnings", "--ignore-errors",
+        "--socket-timeout", "20",
         "--print", template,
     ]
+    args.extend(js_args)
     if flat:
         args.insert(len(base), "--flat-playlist")
     if no_playlist:
@@ -1264,7 +1297,11 @@ detected_type_label() {
 count_playlist_entries() {
     local url="${1-}" n=0
     [[ -n "$url" ]] || { printf '0'; return; }
-    n="$( { ytdlp --flat-playlist --skip-download --no-warnings --ignore-errors \
+    local -a yt_args=(--flat-playlist --skip-download --no-warnings --ignore-errors --socket-timeout 20)
+    if ((${#JS_RUNTIME_ARGS[@]})); then
+        yt_args+=( "${JS_RUNTIME_ARGS[@]}" )
+    fi
+    n="$( { ytdlp "${yt_args[@]}" \
             --print "%(id)s" "$url" 2>/dev/null || true; } \
           | awk 'NF { c++ } END { print c+0 }')"
     n="${n//[[:space:]]/}"
@@ -2012,6 +2049,12 @@ build_common_flags() {
     if ((${#JS_RUNTIME_ARGS[@]})); then
         COMMON_FLAGS+=( "${JS_RUNTIME_ARGS[@]}" )
     fi
+    # Cookies para evitar bloqueos de YouTube.
+    if [[ -n "$COOKIES_FILE" && -r "$COOKIES_FILE" ]]; then
+        COMMON_FLAGS+=( --cookies "$COOKIES_FILE" )
+    elif [[ -n "$COOKIES_BROWSER" ]]; then
+        COMMON_FLAGS+=( --cookies-from-browser "$COOKIES_BROWSER" )
+    fi
 }
 
 # Resultados del último trabajo de descarga.
@@ -2029,6 +2072,23 @@ reset_job_state() {
     JOB_TOTAL=0; JOB_OK=0; JOB_ERRORS=0; JOB_SKIPPED=0; JOB_NEW=0
     JOB_VERIFY_FAILED=0; JOB_COVER_MISSING=0; JOB_RETRIED=false; JOB_WARNINGS=0
     JOB_LYR_FOUND=0; JOB_LYR_NOTFOUND=0; JOB_LYR_ALREADY=0
+}
+
+# Comprueba espacio libre en disco para el destino dado (en KB).
+# Devuelve 0 si hay suficiente, 1 si hay muy poco y se debe abortar.
+check_disk_space() {
+    local dest="${1-}"
+    local avail_kb
+    avail_kb="$(df -Pk -- "$dest" 2>/dev/null | awk 'NR==2 {print $4}' || echo 0)"
+    avail_kb="${avail_kb//[^0-9]/}"
+    [[ -z "$avail_kb" ]] && avail_kb=0
+    if (( avail_kb < 20480 )); then
+        msg_err "Espacio insuficiente en disco: ${avail_kb} KB libres en $dest (se requieren al menos 20 MB)."
+        return 1
+    elif (( avail_kb < 102400 )); then
+        msg_warn "Poco espacio libre en disco: ${avail_kb} KB en $dest (menos de 100 MB)."
+    fi
+    return 0
 }
 
 status_label() {
@@ -2598,10 +2658,33 @@ menu_lyrics_manager() {
                 ask_path "Carpeta o archivo" "$(destination_display)" || { sleep 1; continue; }
                 local ow=()
                 confirm "¿Sustituir letras ya existentes (se hace copia de seguridad)?" && ow=(--overwrite)
-                local f
-                for f in mp3 flac m4a; do
-                    py_core lyrics "$ASKED_PATH" "$f" "${LYRICS_ARGS[@]}" --jobs "$PARALLEL_JOBS" "${ow[@]}" || true
-                done
+                if [[ -f "$ASKED_PATH" ]]; then
+                    # Archivo único: extraer extensión en minúsculas y procesar una sola vez.
+                    local ext="${ASKED_PATH##*.}"
+                    ext="${ext,,}"
+                    case "$ext" in
+                        mp3|flac|m4a)
+                            py_core lyrics "$ASKED_PATH" "$ext" "${LYRICS_ARGS[@]}" --jobs "$PARALLEL_JOBS" "${ow[@]}" || true
+                            ;;
+                        *)
+                            msg_err "Extensión no soportada para letras: .$ext (usa mp3, flac o m4a)"
+                            ;;
+                    esac
+                elif [[ -d "$ASKED_PATH" ]]; then
+                    # Directorio: solo lanzar py_core para formatos que realmente tengan archivos.
+                    local f found_any=false
+                    for f in mp3 flac m4a; do
+                        if find "$ASKED_PATH" -maxdepth 3 -type f -iname "*.$f" -print -quit 2>/dev/null | grep -q .; then
+                            py_core lyrics "$ASKED_PATH" "$f" "${LYRICS_ARGS[@]}" --jobs "$PARALLEL_JOBS" "${ow[@]}" || true
+                            found_any=true
+                        fi
+                    done
+                    if [[ "$found_any" == "false" ]]; then
+                        msg_warn "No se encontraron archivos de audio (mp3/flac/m4a) en: $ASKED_PATH"
+                    fi
+                else
+                    msg_err "Ruta no válida: $ASKED_PATH"
+                fi
                 pause_enter
                 ;;
             2)
@@ -2729,6 +2812,8 @@ OtterRip $OTTERRIP_VERSION — descargador de audio con letras
 Uso: $(basename "$0") [opción | URL [carpeta_destino]]
   (sin opción)           menú interactivo
   <URL> [carpeta_destino] descarga directa (no interactiva) y salida con código de retorno
+  [-q|--quality <n>] [-j|--jobs <n>] [--no-lyrics] [--cookies-from-browser <nav>] [--cookies <archivo>] <URL> [carpeta]
+                                            descarga directa con flags rápidos (sobreescribe config solo esta ejecución)
   --add|--enqueue <URL...> añade una o más URLs a la cola sin abrir el menú
   --doctor               diagnóstico del sistema (puede descargar el backend)
   --queue-run            procesa la cola de descargas sin menús
@@ -2736,7 +2821,7 @@ Uso: $(basename "$0") [opción | URL [carpeta_destino]]
   --version              muestra la versión
   --help                 esta ayuda
 
-Variables: OTTERRIP_DOWNLOADS, PARALLEL_JOBS, OTTERRIP_ASSUME_YES=1, OTTERRIP_YTDLP
+Variables: OTTERRIP_DOWNLOADS, PARALLEL_JOBS, OTTERRIP_ASSUME_YES=1, OTTERRIP_YTDLP, OTTERRIP_COOKIES_BROWSER, OTTERRIP_COOKIES_FILE
 EOF
 }
 
@@ -2787,10 +2872,53 @@ main() {
         return 0
     fi
 
-    # Descarga directa no interactiva: otterrip <URL> [carpeta_destino]
-    if is_http_url "${1-}"; then
+    # Descarga directa no interactiva con flags rápidos opcionales:
+    #   otterrip [-q|--quality <n>] [-j|--jobs <n>] [--no-lyrics] [--cookies-from-browser <nav>] [--cookies <archivo>] <URL> [carpeta]
+    if is_http_url "${1-}" || [[ "${1-}" == "-q" || "${1-}" == "--quality" || "${1-}" == "-j" || "${1-}" == "--jobs" || "${1-}" == "--no-lyrics" || "${1-}" == "--cookies-from-browser" || "${1-}" == "--cookies" ]]; then
+        # Parsear flags rápidos (sobreescriben config solo para esta ejecución).
+        while (( $# > 0 )); do
+            case "${1-}" in
+                -q|--quality)
+                    shift || true
+                    [[ -n "${1-}" ]] || { echo "Falta valor para --quality" >&2; return 2; }
+                    apply_quality_choice "${1-}" || true
+                    ;;
+                -j|--jobs)
+                    shift || true
+                    [[ -n "${1-}" ]] || { echo "Falta valor para --jobs" >&2; return 2; }
+                    PARALLEL_JOBS="$(normalize_jobs "${1-}")" || true
+                    ;;
+                --no-lyrics)
+                    FETCH_LYRICS="false"
+                    ;;
+                --cookies-from-browser)
+                    shift || true
+                    [[ -n "${1-}" ]] || { echo "Falta valor para --cookies-from-browser" >&2; return 2; }
+                    COOKIES_BROWSER="${1-}"
+                    COOKIES_FILE=""
+                    ;;
+                --cookies)
+                    shift || true
+                    [[ -n "${1-}" ]] || { echo "Falta valor para --cookies" >&2; return 2; }
+                    COOKIES_FILE="${1-}"
+                    COOKIES_BROWSER=""
+                    ;;
+                *)
+                    break
+                    ;;
+            esac
+            shift || true
+        done
+        # Después de los flags, el siguiente argumento debe ser la URL.
+        if ! is_http_url "${1-}"; then
+            echo "Se esperaba una URL tras las opciones rápidas." >&2
+            usage >&2
+            return 2
+        fi
         local dl_dest="${2-$DOWNLOADS}"
         dl_dest="$(expand_tilde "$(strip_wrapping_quotes "$dl_dest")")"
+        mkdir -p -- "$dl_dest" 2>/dev/null || true
+        check_disk_space "$dl_dest" || return 1
         detect_url_type "$1"
         download_job "$1" "$DETECTED_TYPE" "$DETECTED_COUNT" "$dl_dest" || return $?
         print_job_summary "$dl_dest"

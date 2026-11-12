@@ -1,5 +1,10 @@
 # OtterRip
 
+> [!IMPORTANT]
+> Este es el archivo principal del proyecto y el que debes usar para arrancar OtterRip:
+> 
+> [Down-Linux-music_v7.sh](https://github.com/0o0-ct/Script-sh-to-download-music-/blob/main/Down-Linux-music_v7.sh)
+
 OtterRip es un descargador de audio para Linux con letras, cola de descargas,
 recuperación de sesiones y herramientas de biblioteca.
 

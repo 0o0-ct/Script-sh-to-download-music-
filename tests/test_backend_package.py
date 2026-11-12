@@ -43,6 +43,13 @@ class TestBackendPackage(unittest.TestCase):
             self.assertIsNotNone(version_file)
             assert version_file is not None
             self.assertEqual(version_file.read().decode().strip(), version.group(1))
+            requirements_file = archive.extractfile("requirements.txt")
+            self.assertIsNotNone(requirements_file)
+            assert requirements_file is not None
+            self.assertEqual(
+                requirements_file.read(),
+                (ROOT / "requirements.txt").read_bytes(),
+            )
             manifest_file = archive.extractfile("lib/otterrip_core/REQUIRED_FILES")
             self.assertIsNotNone(manifest_file)
             assert manifest_file is not None
@@ -88,9 +95,14 @@ class TestBackendPackage(unittest.TestCase):
                     """source "$1"
 expected_hash="$BACKEND_SHA256"
 BACKEND_SHA256="$(printf '%064d' 0)"
+download_backend_archive() { cp "$TEST_BACKEND_ARCHIVE" "$1"; }
 if ensure_backend; then exit 10; fi
 [[ ! -e "$APP_INSTALL_DIR" ]]
 BACKEND_SHA256="$expected_hash"
+download_backend_archive() { printf 'partial archive' > "$1"; return 18; }
+if ensure_backend; then exit 12; fi
+[[ ! -e "$APP_INSTALL_DIR" ]]
+[[ -z "$(find "$APP_ROOT" -mindepth 1 -maxdepth 1 -type d -name '.v7.1.0.*' -print -quit)" ]]
 download_backend_archive() { cp "$TEST_BACKEND_ARCHIVE" "$1"; }
 ensure_backend
 [[ "$LIB_DIR" == "$APP_INSTALL_DIR/lib" ]]
@@ -105,6 +117,93 @@ backend_is_valid "$APP_INSTALL_DIR"
                     str(script),
                 ],
                 env=environment,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_compatible_local_backend_is_used_without_download(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            script_dir = temp / "launcher"
+            home = temp / "home"
+            script_dir.mkdir()
+            home.mkdir()
+            shutil.copy2(ROOT / "Down-Linux-music_v7.sh", script_dir)
+            shutil.copytree(ROOT / "lib", script_dir / "lib")
+            shutil.copy2(ROOT / "requirements.txt", script_dir / "requirements.txt")
+
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "HOME": str(home),
+                    "OTTERRIP_DATA_DIR": str(temp / "data"),
+                    "OTTERRIP_CONFIG_DIR": str(temp / "config"),
+                    "OTTERRIP_STATE_DIR": str(temp / "state"),
+                    "OTTERRIP_CACHE_DIR": str(temp / "cache"),
+                }
+            )
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    """source "$1"
+download_backend_archive() { return 73; }
+ensure_backend
+[[ "$LIB_DIR" == "$SCRIPT_DIR/lib" ]]
+[[ "$REQUIREMENTS_FILE" == "$SCRIPT_DIR/requirements.txt" ]]
+[[ ! -e "$APP_INSTALL_DIR" ]]
+""",
+                    "local-backend-test",
+                    str(script_dir / "Down-Linux-music_v7.sh"),
+                ],
+                env=environment,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_interrupted_install_recovers_previous_backend(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            script_dir = temp / "launcher"
+            home = temp / "home"
+            script_dir.mkdir()
+            home.mkdir()
+            script = script_dir / "Down-Linux-music_v7.sh"
+            shutil.copy2(ROOT / script.name, script)
+
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "HOME": str(home),
+                    "OTTERRIP_DATA_DIR": str(temp / "data"),
+                    "OTTERRIP_CONFIG_DIR": str(temp / "config"),
+                    "OTTERRIP_STATE_DIR": str(temp / "state"),
+                    "OTTERRIP_CACHE_DIR": str(temp / "cache"),
+                }
+            )
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    """source "$1"
+orphan="$APP_ROOT/.v${OTTERRIP_VERSION}.99999999.interrupted"
+mkdir -p "$orphan/previous-install"
+cp -a "$TEST_BACKEND_ROOT/lib" "$orphan/previous-install/"
+cp "$TEST_BACKEND_ROOT/requirements.txt" "$orphan/previous-install/"
+download_backend_archive() { return 73; }
+ensure_backend
+[[ "$LIB_DIR" == "$APP_INSTALL_DIR/lib" ]]
+[[ ! -e "$orphan" ]]
+""",
+                    "recovery-test",
+                    str(script),
+                ],
+                env={
+                    **environment,
+                    "TEST_BACKEND_ROOT": str(ROOT),
+                },
                 capture_output=True,
                 text=True,
             )

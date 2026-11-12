@@ -96,19 +96,34 @@ set_backend_dir() {
 }
 
 backend_archive_paths_are_safe() {
-    local archive="${1-}" entry
-    tar -tzf "$archive" >/dev/null 2>&1 || return 1
-    while IFS= read -r entry; do
-        entry="${entry#./}"
-        [[ "$entry" != /* ]] || return 1
-        case "/$entry/" in
-            */../*) return 1 ;;
-        esac
-        case "$entry" in
-            lib|lib/*|requirements.txt) ;;
-            *) return 1 ;;
-        esac
-    done < <(tar -tzf "$archive")
+    local archive="${1-}"
+    python3 - "$archive" <<'PYEOF'
+import sys
+import tarfile
+from pathlib import PurePosixPath
+
+archive_path = sys.argv[1]
+try:
+    with tarfile.open(archive_path, "r:gz") as archive:
+        seen = set()
+        for member in archive.getmembers():
+            name = member.name.removeprefix("./")
+            path = PurePosixPath(name)
+            if (
+                not name
+                or path.is_absolute()
+                or "\\" in name
+                or ".." in path.parts
+                or name not in ("lib", "requirements.txt")
+                and not name.startswith("lib/")
+                or not (member.isdir() or member.isfile())
+                or name in seen
+            ):
+                raise ValueError(f"unsafe archive entry: {member.name!r}")
+            seen.add(name)
+except (OSError, tarfile.TarError, ValueError):
+    sys.exit(1)
+PYEOF
 }
 
 sha256_file() {
@@ -137,8 +152,78 @@ download_backend_archive() {
     fi
 }
 
-ensure_backend() {
+recover_backend_install() {
+    local tmp_dir="" backup="" owner="" basename=""
+    [[ -d "$APP_ROOT" ]] || return 0
+    for tmp_dir in "$APP_ROOT"/".v${OTTERRIP_VERSION}".[0-9]*.*; do
+        [[ -d "$tmp_dir" ]] || continue
+        basename="${tmp_dir##*/}"
+        if [[ "$basename" =~ ^\.v[0-9]+\.[0-9]+\.[0-9]+\.([0-9]+)\. ]]; then
+            owner="${BASH_REMATCH[1]}"
+            if [[ "$owner" != "$$" ]] && kill -0 "$owner" 2>/dev/null; then
+                continue
+            fi
+        fi
+        backup="$tmp_dir/previous-install"
+        if backend_is_valid "$backup"; then
+            if ! backend_is_valid "$APP_INSTALL_DIR"; then
+                rm -rf -- "$APP_INSTALL_DIR"
+                if ! mv -- "$backup" "$APP_INSTALL_DIR"; then
+                    echo "No se pudo recuperar el backend anterior desde $backup." >&2
+                    return 1
+                fi
+            fi
+        fi
+        rm -rf -- "$tmp_dir"
+    done
+    return 0
+}
+
+BACKEND_LOCK_DIR=""
+
+acquire_backend_lock() {
+    local lock="$APP_ROOT/.v${OTTERRIP_VERSION}.lock" owner="" waited=0
+    while ! mkdir -- "$lock" 2>/dev/null; do
+        owner="$(cat -- "$lock/pid" 2>/dev/null || true)"
+        if [[ "$owner" =~ ^[0-9]+$ ]] && ! kill -0 "$owner" 2>/dev/null; then
+            rm -f -- "$lock/pid"
+            rmdir -- "$lock" 2>/dev/null || true
+            continue
+        fi
+        if [[ -z "$owner" ]] &&
+            [[ -n "$(find "$lock" -maxdepth 0 -mmin +2 -print -quit 2>/dev/null)" ]]; then
+            rmdir -- "$lock" 2>/dev/null || true
+            continue
+        fi
+        if (( waited >= 120 )); then
+            echo "Se agotó el tiempo esperando la instalación del backend ($lock)." >&2
+            return 1
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    if ! printf '%s\n' "$$" > "$lock/pid"; then
+        rmdir -- "$lock" 2>/dev/null || true
+        echo "No se pudo registrar el bloqueo de instalación del backend." >&2
+        return 1
+    fi
+    BACKEND_LOCK_DIR="$lock"
+}
+
+release_backend_lock() {
+    local owner=""
+    [[ -n "$BACKEND_LOCK_DIR" ]] || return 0
+    owner="$(cat -- "$BACKEND_LOCK_DIR/pid" 2>/dev/null || true)"
+    if [[ "$owner" == "$$" ]]; then
+        rm -f -- "$BACKEND_LOCK_DIR/pid"
+        rmdir -- "$BACKEND_LOCK_DIR" 2>/dev/null || true
+    fi
+    BACKEND_LOCK_DIR=""
+}
+
+ensure_backend_unlocked() {
     local tmp_dir="" archive="" stage="" actual_hash="" backup=""
+    recover_backend_install || return 1
     if backend_is_valid "$SCRIPT_DIR"; then
         set_backend_dir "$SCRIPT_DIR"
         return 0
@@ -148,7 +233,10 @@ ensure_backend() {
         return 0
     fi
 
-    echo "Descargando el backend OtterRip $OTTERRIP_VERSION desde GitHub..."
+    command -v python3 >/dev/null 2>&1 || {
+        echo "Se necesita Python 3 para validar e instalar el backend." >&2
+        return 1
+    }
     if [[ ! "$BACKEND_SHA256" =~ ^[[:xdigit:]]{64}$ ]]; then
         echo "La versión $OTTERRIP_VERSION no tiene un SHA-256 de backend válido." >&2
         return 1
@@ -157,12 +245,13 @@ ensure_backend() {
         echo "No se pudo crear el directorio de instalación: $APP_ROOT" >&2
         return 1
     fi
-    tmp_dir="$(mktemp -d "$APP_ROOT/.v${OTTERRIP_VERSION}.XXXXXX")" || {
+    tmp_dir="$(mktemp -d "$APP_ROOT/.v${OTTERRIP_VERSION}.$$.XXXXXX")" || {
         echo "No se pudo crear un directorio temporal para instalar el backend." >&2
         return 1
     }
     archive="$tmp_dir/backend.tar.gz"
     stage="$tmp_dir/install"
+    echo "Descargando el backend OtterRip $OTTERRIP_VERSION desde GitHub..."
     if ! download_backend_archive "$archive"; then
         echo "No se pudo descargar el backend. Revisa la conexión o conserva una instalación local válida." >&2
         rm -rf -- "$tmp_dir"
@@ -185,8 +274,7 @@ ensure_backend() {
         rm -rf -- "$tmp_dir"
         return 1
     fi
-    if command -v python3 >/dev/null 2>&1 &&
-        ! python3 - "$stage/lib/otterrip_core" <<'PYEOF'
+    if ! python3 - "$stage/lib/otterrip_core" <<'PYEOF'
 import ast
 from pathlib import Path
 import sys
@@ -219,13 +307,31 @@ PYEOF
         rm -rf -- "$tmp_dir"
         return 1
     fi
-    rm -rf -- "$tmp_dir"
     if ! backend_is_valid "$APP_INSTALL_DIR"; then
         echo "La instalación del backend no superó la verificación final." >&2
+        rm -rf -- "$APP_INSTALL_DIR"
+        if [[ -n "$backup" ]] && ! mv -- "$backup" "$APP_INSTALL_DIR"; then
+            echo "No se pudo restaurar el backend anterior; se conserva en $backup." >&2
+            return 1
+        fi
+        rm -rf -- "$tmp_dir"
         return 1
     fi
+    rm -rf -- "$tmp_dir"
     set_backend_dir "$APP_INSTALL_DIR"
     echo "Backend OtterRip $OTTERRIP_VERSION instalado en $APP_INSTALL_DIR."
+}
+
+ensure_backend() {
+    mkdir -p -- "$APP_ROOT" || {
+        echo "No se pudo crear el directorio de instalación: $APP_ROOT" >&2
+        return 1
+    }
+    acquire_backend_lock || return 1
+    local rc=0
+    ensure_backend_unlocked || rc=$?
+    release_backend_lock
+    return "$rc"
 }
 
 # ── Estado global ──────────────────────────────────────────────
@@ -344,6 +450,7 @@ cleanup() {
         fi
         WORK_DIR=""
     fi
+    release_backend_lock
     release_dest_lock
     exit "$rc"
 }
@@ -888,6 +995,8 @@ install_deps() {
     fi
     echo "  ${GREEN}✔${NC} Python $(python3 --version 2>&1 | awk '{print $2}')"
 
+    ensure_backend || return 1
+
     if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
         echo "  ${YELLOW}⚠${NC} ffmpeg/ffprobe no encontrados."
         if confirm "¿Instalar ffmpeg ahora (requiere permisos de administrador)?"; then
@@ -907,7 +1016,7 @@ install_deps() {
         echo "  ${RED}✘${NC} El backend Python instalado no pasó la prueba de inicio."
         return 1
     fi
-    echo "  ${GREEN}✔${NC} mutagen + requests listos ($([[ "$PYBIN" == "$VENV_DIR/bin/python" ]] && echo 'venv aislado' || echo 'Python del sistema'))"
+    echo "  ${GREEN}✔${NC} aiohttp + mutagen + requests listos ($([[ "$PYBIN" == "$VENV_DIR/bin/python" ]] && echo 'venv aislado' || echo 'Python del sistema'))"
     ensure_ytdlp || return 1
     setup_js_runtime
 
@@ -1546,7 +1655,7 @@ menu_lyrics() {
                     if [[ "$PYBIN" != "$VENV_DIR/bin/python" ]]; then
                         if create_venv; then
                             PYBIN="$VENV_DIR/bin/python"
-                            venv_pip_install -r "$REQUIREMENTS_FILE" || true
+                            venv_pip_install -r "$SCRIPT_DIR/requirements.txt" || true
                         fi
                     fi
                     [[ "$PYBIN" == "$VENV_DIR/bin/python" ]] && { venv_pip_install syncedlyrics || true; }
@@ -2502,7 +2611,7 @@ menu_diagnostics() {
                 if confirm "¿Actualizar yt-dlp en el venv de OtterRip?"; then
                     if [[ "$PYBIN" != "$VENV_DIR/bin/python" ]]; then
                         create_venv && PYBIN="$VENV_DIR/bin/python" \
-                            && { libs_ok_for "$PYBIN" || venv_pip_install -r "$REQUIREMENTS_FILE"; }
+                            && { libs_ok_for "$PYBIN" || venv_pip_install -r "$SCRIPT_DIR/requirements.txt"; }
                     fi
                     if [[ "$PYBIN" == "$VENV_DIR/bin/python" ]]; then
                         venv_pip_install "yt-dlp[default]" || true
@@ -2554,13 +2663,10 @@ EOF
 
 # Para --doctor y pruebas: elige intérprete sin instalar nada.
 select_python_readonly() {
-    if [[ -x "$VENV_DIR/bin/python" ]] && libs_ok_for "$VENV_DIR/bin/python"; then
+    if [[ -x "$VENV_DIR/bin/python" ]]; then
         PYBIN="$VENV_DIR/bin/python"
-    elif libs_ok_for python3; then
-        PYBIN="$(command -v python3 2>/dev/null || true)"
     else
-        echo "Las dependencias Python del backend no están instaladas; ejecuta OtterRip normalmente para prepararlas." >&2
-        return 1
+        PYBIN="$(command -v python3 2>/dev/null || true)"
     fi
 }
 
@@ -2569,9 +2675,9 @@ main() {
         --version|-V) printf 'OtterRip %s\n' "$OTTERRIP_VERSION"; return 0 ;;
         --help|-h) usage; return 0 ;;
         --doctor)
-            ensure_backend || return 1
-            select_python_readonly || return 1
+            select_python_readonly
             [[ -n "$PYBIN" ]] || { echo "python3 no encontrado."; return 13; }
+            ensure_backend || return 1
             py_core doctor --dest "$DOWNLOADS"
             return $?
             ;;
@@ -2580,7 +2686,6 @@ main() {
         *) echo "Opción desconocida: $1" >&2; usage >&2; return 2 ;;
     esac
 
-    ensure_backend || return 1
     load_config || true
     if ! install_deps; then
         echo -e "\n${RED}No se pudo iniciar OtterRip: faltan dependencias.${NC}\n"

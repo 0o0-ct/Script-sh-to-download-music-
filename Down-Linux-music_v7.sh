@@ -556,7 +556,7 @@ safe_name() {
     blen="$(printf '%s' "$s" | LC_ALL=C wc -c)"
     blen="${blen//[[:space:]]/}"
     if [[ "$blen" =~ ^[0-9]+$ ]] && (( blen > 200 )); then
-        s="$(python3 -c 'import sys; b=sys.argv[1].encode("utf-8")[:200]; sys.stdout.write(b.decode("utf-8","ignore"))' "$s" 2>/dev/null || printf '%s' "${s:0:80}")"
+        s="$("${PYBIN:-python3}" -c 'import sys; b=sys.argv[1].encode("utf-8")[:200]; sys.stdout.write(b.decode("utf-8","ignore"))' "$s" 2>/dev/null || printf '%s' "${s:0:80}")"
     fi
     [[ -z "$s" ]] && s="_"
     printf '%s' "$s"
@@ -1027,21 +1027,22 @@ deps_cache_valid() {
 
 # Escribe la caché de dependencias tras una verificación exitosa.
 # Guarda suficiente estado para restaurar el entorno sin repetir comprobaciones pesadas.
+# Usa printf '%q' para que rutas con espacios o caracteres especiales sean seguras al hacer source.
 write_deps_cache() {
     {
-        echo "CACHED_OTTERRIP_VERSION=$OTTERRIP_VERSION"
-        echo "CACHED_LIB_DIR=$LIB_DIR"
-        echo "CACHED_REQUIREMENTS_FILE=$REQUIREMENTS_FILE"
-        echo "CACHED_PYBIN=$PYBIN"
-        echo "CACHED_YTDLP_BIN=$YTDLP_BIN"
-        echo "CACHED_SYNCEDLYRICS_AVAILABLE=${SYNCEDLYRICS_AVAILABLE:-false}"
+        printf '%s=%q\n' CACHED_OTTERRIP_VERSION "$OTTERRIP_VERSION"
+        printf '%s=%q\n' CACHED_LIB_DIR "$LIB_DIR"
+        printf '%s=%q\n' CACHED_REQUIREMENTS_FILE "$REQUIREMENTS_FILE"
+        printf '%s=%q\n' CACHED_PYBIN "$PYBIN"
+        printf '%s=%q\n' CACHED_YTDLP_BIN "$YTDLP_BIN"
+        printf '%s=%q\n' CACHED_SYNCEDLYRICS_AVAILABLE "${SYNCEDLYRICS_AVAILABLE:-false}"
         local _js=""
         if ((${#JS_RUNTIME_ARGS[@]})); then
             _js="$(printf ' %s' "${JS_RUNTIME_ARGS[@]}")"
             _js="${_js:1}"
         fi
-        echo "CACHED_JS_ARGS=$_js"
-        echo "CACHED_TIMESTAMP=$(date +%s)"
+        printf '%s=%q\n' CACHED_JS_ARGS "$_js"
+        printf '%s=%q\n' CACHED_TIMESTAMP "$(date +%s)"
     } > "$DEPS_CACHE_FILE" 2>/dev/null || true
 }
 
@@ -1057,8 +1058,7 @@ install_deps() {
         SYNCEDLYRICS_AVAILABLE="${CACHED_SYNCEDLYRICS_AVAILABLE:-false}"
         JS_RUNTIME_ARGS=()
         if [[ -n "${CACHED_JS_ARGS:-}" ]]; then
-            # shellcheck disable=SC2206
-            JS_RUNTIME_ARGS=(${CACHED_JS_ARGS})
+            read -r -a JS_RUNTIME_ARGS <<< "${CACHED_JS_ARGS}"
         fi
         msg_ok "Dependencias verificadas previamente (caché < 24 h)."
         return 0
@@ -1147,6 +1147,7 @@ detect_url_type() {
     mapfile -t lines < <(
         DETECT_URL="$url" DETECT_NO_PLAYLIST="$no_playlist" YTDLP_BIN="$YTDLP_BIN" \
         DETECT_JS_ARGS="${JS_RUNTIME_ARGS[*]:-}" \
+        DETECT_COOKIES_FILE="${COOKIES_FILE:-}" DETECT_COOKIES_BROWSER="${COOKIES_BROWSER:-}" \
         "${PYBIN:-python3}" - <<'PYEOF'
 import json, os, re, subprocess, sys
 
@@ -1154,6 +1155,8 @@ url = os.environ.get("DETECT_URL", "")
 no_playlist = os.environ.get("DETECT_NO_PLAYLIST", "0") == "1"
 ytdlp_bin = os.environ.get("YTDLP_BIN", "").strip()
 js_args = [a for a in os.environ.get("DETECT_JS_ARGS", "").split() if a]
+cookies_file = os.environ.get("DETECT_COOKIES_FILE", "").strip()
+cookies_browser = os.environ.get("DETECT_COOKIES_BROWSER", "").strip()
 
 def url_hint(value: str) -> str:
     u = value.lower()
@@ -1201,6 +1204,10 @@ def try_run(flat: bool):
         "--print", template,
     ]
     args.extend(js_args)
+    if cookies_file and os.path.isfile(cookies_file) and os.access(cookies_file, os.R_OK):
+        args.extend(["--cookies", cookies_file])
+    elif cookies_browser:
+        args.extend(["--cookies-from-browser", cookies_browser])
     if flat:
         args.insert(len(base), "--flat-playlist")
     if no_playlist:
@@ -1300,6 +1307,12 @@ count_playlist_entries() {
     local -a yt_args=(--flat-playlist --skip-download --no-warnings --ignore-errors --socket-timeout 20)
     if ((${#JS_RUNTIME_ARGS[@]})); then
         yt_args+=( "${JS_RUNTIME_ARGS[@]}" )
+    fi
+    # Cookies para evitar bloqueos de YouTube durante el conteo.
+    if [[ -n "$COOKIES_FILE" && -r "$COOKIES_FILE" ]]; then
+        yt_args+=( --cookies "$COOKIES_FILE" )
+    elif [[ -n "$COOKIES_BROWSER" ]]; then
+        yt_args+=( --cookies-from-browser "$COOKIES_BROWSER" )
     fi
     n="$( { ytdlp "${yt_args[@]}" \
             --print "%(id)s" "$url" 2>/dev/null || true; } \
@@ -1483,6 +1496,11 @@ menu() {
         else
             printf '  %sPortada:%s     AUTO (thumbnail)\n' "$BOLD" "$NC"
         fi
+        if [[ -n "$COOKIES_FILE" ]]; then
+            printf '  %sCookies:%s     Archivo (%s)\n' "$BOLD" "$NC" "$COOKIES_FILE"
+        elif [[ -n "$COOKIES_BROWSER" ]]; then
+            printf '  %sCookies:%s     Navegador (%s)\n' "$BOLD" "$NC" "$COOKIES_BROWSER"
+        fi
         printf '  %sDestino:%s     %s\n' "$BOLD" "$NC" "$dest"
         echo ""
         echo -e "  ${CYAN} 1)${NC} Descargar audio"
@@ -1500,6 +1518,7 @@ menu() {
         echo -e "  ${CYAN}13)${NC} Gestor avanzado de letras"
         echo -e "  ${CYAN}14)${NC} Conversor de audio (archivos locales)"
         echo -e "  ${CYAN}15)${NC} Diagnóstico y mantenimiento"
+        echo -e "  ${CYAN}16)${NC} Configurar cookies (YouTube / anti-bot)"
         echo -e "  ${CYAN} 0)${NC} Salir"
         echo ""
         read -rp "  Opción: " op || exit 0
@@ -1524,6 +1543,7 @@ menu() {
             13) menu_lyrics_manager ;;
             14) menu_convert ;;
             15) menu_diagnostics ;;
+            16) menu_cookies ;;
             0) save_config; echo -e "\n  ${GREEN}¡Hasta luego!${NC}\n"; exit 0 ;;
             *) echo -e "  ${RED}Opción inválida.${NC}"; sleep 1 ;;
         esac
@@ -1663,6 +1683,65 @@ menu_cover() {
     COVER_LOCAL="$path"
     printf '  %s✔ Portada: %s%s\n' "$GREEN" "$COVER_LOCAL" "$NC"
     sleep 0.8
+}
+
+menu_cookies() {
+    while true; do
+        clear_screen
+        echo -e "${BOLD}${CYAN}══ Configuración de Cookies (YouTube / Anti-Bot) ══${NC}\n"
+        echo -e "  Usa cookies si YouTube bloquea descargas pidiendo iniciar sesión."
+        echo ""
+        if [[ -n "$COOKIES_FILE" ]]; then
+            printf '  %sActual:%s Archivo → %s\n\n' "$BOLD" "$NC" "$COOKIES_FILE"
+        elif [[ -n "$COOKIES_BROWSER" ]]; then
+            printf '  %sActual:%s Navegador → %s\n\n' "$BOLD" "$NC" "$COOKIES_BROWSER"
+        else
+            printf '  %sActual:%s Desactivadas\n\n' "$BOLD" "$NC"
+        fi
+        echo -e "  ${CYAN}1)${NC} Extraer cookies de un navegador (firefox, chromium, brave, chrome...)"
+        echo -e "  ${CYAN}2)${NC} Usar archivo cookies.txt (formato Netscape)"
+        echo -e "  ${CYAN}3)${NC} Desactivar cookies"
+        echo -e "  ${CYAN}0)${NC} Volver"
+        echo ""
+        local c="" nav="" raw="" path=""
+        read -rp "  Opción: " c || return 0
+        case "$c" in
+            1)
+                read -rp "  Navegador (ej. firefox, brave, chromium, chrome): " nav || return 0
+                nav="$(trim_input "$nav")"
+                if [[ -n "$nav" && "$nav" =~ ^[a-zA-Z0-9_.:+-]+$ ]]; then
+                    COOKIES_BROWSER="$nav"
+                    COOKIES_FILE=""
+                    msg_ok "Cookies desde navegador: $COOKIES_BROWSER"
+                else
+                    msg_err "Nombre de navegador inválido."
+                fi
+                sleep 1
+                ;;
+            2)
+                read -rp "  Ruta al archivo cookies.txt: " raw || return 0
+                raw="$(trim_input "$(strip_wrapping_quotes "$raw")")"
+                raw="$(expand_tilde "$raw")"
+                if [[ -n "$raw" && -f "$raw" && -r "$raw" ]]; then
+                    path="$(realpath -m -- "$raw" 2>/dev/null || printf '%s' "$raw")"
+                    COOKIES_FILE="$path"
+                    COOKIES_BROWSER=""
+                    msg_ok "Archivo de cookies: $COOKIES_FILE"
+                else
+                    msg_err "Archivo no encontrado o sin permisos de lectura."
+                fi
+                sleep 1.2
+                ;;
+            3)
+                COOKIES_BROWSER=""
+                COOKIES_FILE=""
+                msg_ok "Cookies desactivadas."
+                sleep 0.8
+                ;;
+            0|"") return 0 ;;
+            *) msg_err "Opción inválida."; sleep 1 ;;
+        esac
+    done
 }
 
 toggle_var() {
@@ -2166,6 +2245,10 @@ _download_job_body() {
     if [[ ! -w "$dest" ]]; then
         msg_err "Sin permiso de escritura en: $dest"
         JOB_STATUS="failed"; JOB_CLASS="permanent"
+        return 1
+    fi
+    if ! check_disk_space "$dest"; then
+        JOB_STATUS="failed"; JOB_CLASS="recoverable"
         return 1
     fi
     acquire_dest_lock "$dest" || { JOB_STATUS="failed"; JOB_CLASS="recoverable"; return 1; }
@@ -2835,6 +2918,7 @@ select_python_readonly() {
 }
 
 main() {
+    # Bloque 1: opciones sin efectos secundarios (salen inmediatamente).
     case "${1-}" in
         --version|-V) printf 'OtterRip %s\n' "$OTTERRIP_VERSION"; return 0 ;;
         --help|-h) usage; return 0 ;;
@@ -2846,14 +2930,36 @@ main() {
             py_core doctor --dest "$DOWNLOADS"
             return $?
             ;;
-        "") ;;
-        --queue-run) ;;
-        --check-deps) install_deps --check-deps; return $? ;;
-        *) echo "Opción desconocida: $1" >&2; usage >&2; return 2 ;;
     esac
 
+    # Bloque 2: permitir pasar los argumentos válidos; rechazar el resto.
+    case "${1-}" in
+        "") ;;
+        --queue-run) ;;
+        --check-deps) ;;
+        --add|--enqueue) ;;
+        -q|--quality|-j|--jobs|--no-lyrics|--cookies-from-browser|--cookies) ;;
+        *)
+            if is_http_url "${1-}"; then
+                :
+            else
+                msg_err "Opción desconocida: $1"
+                usage >&2
+                return 2
+            fi
+            ;;
+    esac
+
+    # Inicializar directorios y config ANTES de cualquier operación con efectos.
     init_runtime_dirs
     load_config || true
+
+    # --check-deps ahora tiene los directorios creados para write_deps_cache.
+    if [[ "${1-}" == "--check-deps" ]]; then
+        install_deps --check-deps
+        return $?
+    fi
+
     if ! install_deps; then
         echo -e "\n${RED}No se pudo iniciar OtterRip: faltan dependencias.${NC}\n"
         return 1
@@ -2875,32 +2981,42 @@ main() {
     # Descarga directa no interactiva con flags rápidos opcionales:
     #   otterrip [-q|--quality <n>] [-j|--jobs <n>] [--no-lyrics] [--cookies-from-browser <nav>] [--cookies <archivo>] <URL> [carpeta]
     if is_http_url "${1-}" || [[ "${1-}" == "-q" || "${1-}" == "--quality" || "${1-}" == "-j" || "${1-}" == "--jobs" || "${1-}" == "--no-lyrics" || "${1-}" == "--cookies-from-browser" || "${1-}" == "--cookies" ]]; then
-        # Parsear flags rápidos (sobreescriben config solo para esta ejecución).
         while (( $# > 0 )); do
             case "${1-}" in
                 -q|--quality)
                     shift || true
-                    [[ -n "${1-}" ]] || { echo "Falta valor para --quality" >&2; return 2; }
-                    apply_quality_choice "${1-}" || true
+                    [[ -n "${1-}" ]] || { msg_err "Falta valor para --quality"; return 2; }
+                    apply_quality_choice "${1-}" || { msg_err "Calidad inválida: ${1-} (usa 1-5)"; return 2; }
                     ;;
                 -j|--jobs)
                     shift || true
-                    [[ -n "${1-}" ]] || { echo "Falta valor para --jobs" >&2; return 2; }
-                    PARALLEL_JOBS="$(normalize_jobs "${1-}")" || true
+                    if ! is_positive_int "${1-}" || (( 10#${1-} < 1 || 10#${1-} > 32 )); then
+                        msg_err "Número de workers inválido: ${1-} (usa 1-32)"
+                        return 2
+                    fi
+                    PARALLEL_JOBS="$(normalize_jobs "${1-}")"
                     ;;
                 --no-lyrics)
                     FETCH_LYRICS="false"
                     ;;
                 --cookies-from-browser)
                     shift || true
-                    [[ -n "${1-}" ]] || { echo "Falta valor para --cookies-from-browser" >&2; return 2; }
+                    if [[ -z "${1-}" || ! "${1-}" =~ ^[a-zA-Z0-9_.:+-]+$ ]]; then
+                        msg_err "Valor inválido para --cookies-from-browser: ${1-}"
+                        return 2
+                    fi
                     COOKIES_BROWSER="${1-}"
                     COOKIES_FILE=""
                     ;;
                 --cookies)
                     shift || true
-                    [[ -n "${1-}" ]] || { echo "Falta valor para --cookies" >&2; return 2; }
-                    COOKIES_FILE="${1-}"
+                    local cpath=""
+                    cpath="$(expand_tilde "$(strip_wrapping_quotes "${1-}")")"
+                    if [[ -z "$cpath" || ! -f "$cpath" || ! -r "$cpath" ]]; then
+                        msg_err "Archivo de cookies no encontrado o no legible: ${1-}"
+                        return 2
+                    fi
+                    COOKIES_FILE="$cpath"
                     COOKIES_BROWSER=""
                     ;;
                 *)
@@ -2909,19 +3025,21 @@ main() {
             esac
             shift || true
         done
-        # Después de los flags, el siguiente argumento debe ser la URL.
         if ! is_http_url "${1-}"; then
-            echo "Se esperaba una URL tras las opciones rápidas." >&2
+            msg_err "Se esperaba una URL válida tras las opciones rápidas."
             usage >&2
             return 2
         fi
-        local dl_dest="${2-$DOWNLOADS}"
-        dl_dest="$(expand_tilde "$(strip_wrapping_quotes "$dl_dest")")"
-        mkdir -p -- "$dl_dest" 2>/dev/null || true
-        check_disk_space "$dl_dest" || return 1
+        local dl_dest=""
+        if [[ -n "${2-}" ]]; then
+            dl_dest="$(resolve_destination "$2")" || { msg_err "Ruta de destino inválida: $2"; return 2; }
+        else
+            dl_dest="$(destination_display)"
+        fi
         detect_url_type "$1"
         download_job "$1" "$DETECTED_TYPE" "$DETECTED_COUNT" "$dl_dest" || return $?
         print_job_summary "$dl_dest"
+        [[ "$JOB_STATUS" == "ok" || "$JOB_STATUS" == "partial" ]] || return 1
         return 0
     fi
 

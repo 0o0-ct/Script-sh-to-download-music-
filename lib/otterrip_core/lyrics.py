@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lyrics engine — concurrent multi-provider search, evaluation, and embedding.
+"""Lyrics engine — per-file concurrent fallback search and embedding.
 
 This is the core lyrics module invoked by the Bash wrapper via:
     py_core lyrics <target> <fmt> [options...]
@@ -9,9 +9,9 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import time
+import unicodedata
 from pathlib import Path
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 try:
     import mutagen
@@ -136,25 +136,25 @@ def _embed_lyrics(audio, result: LyricsResult, mode: str = "embed") -> bool:
             audio.tags.delall("SYLT:")
 
             if result.has_sync and result.timed_entries:
-                # Embed as SYLT (synchronized)
-                lrc_text = _format_lrc(result.timed_entries)
-                for i, line in enumerate(lrc_text.split("\n")):
-                    if line.strip():
-                        audio.tags.add(
-                            SYLT(
-                                encoding=3,
-                                lang="eng",
-                                text=line,
-                                type=1,
-                                started=0,
-                                syncedType=2,
-                                timestamp=[i * 1000],  # approximate
-                            )
+                synced_text = [
+                    (text, round(timestamp * 1000))
+                    for timestamp, text in result.timed_entries
+                    if text.strip()
+                ]
+                if synced_text:
+                    audio.tags.add(
+                        SYLT(
+                            encoding=3,
+                            lang="eng",
+                            format=2,
+                            type=1,
+                            text=synced_text,
                         )
-            # Always embed USLT as well (plain text fallback)
+                    )
+
             plain = result.plain_text or "\n".join(t for _, t in result.timed_entries)
             if plain:
-                audio.tags.add(USLT(encoding=3, lang="eng", text=plain.split("\n")))
+                audio.tags.add(USLT(encoding=3, lang="eng", text=plain))
 
         elif isinstance(audio, FLAC):
             plain = result.plain_text or "\n".join(t for _, t in result.timed_entries)
@@ -194,20 +194,24 @@ def _build_providers(
     provider_names: str,
     host: str = "https://lrclib.net",
 ) -> list[BaseProvider]:
-    """Build provider instances from comma-separated names."""
+    """Build providers in the requested fallback order."""
     names = [n.strip().lower() for n in provider_names.split(",") if n.strip()]
     providers: list[BaseProvider] = []
+    multiweb_sources = tuple(
+        source for source in MultiwebProvider.DEFAULT_SOURCES
+        if source != "lrclib" or "lrclib" not in names
+    )
     for name in names:
         if name == "lrclib":
             providers.append(LrclibProvider(host=host))
         elif name == "multiweb":
-            p = MultiwebProvider()
+            p = MultiwebProvider(sources=multiweb_sources)
             if p.is_available():
                 providers.append(p)
     return providers
 
 
-# ─── Concurrent search ───────────────────────────────────────────
+# ─── Provider fallback ───────────────────────────────────────────
 
 async def _search_one(
     provider: BaseProvider,
@@ -216,31 +220,55 @@ async def _search_one(
 ) -> list[LyricsResult]:
     """Search a single provider with timeout."""
     try:
-        return await asyncio.wait_for(provider.search(query), timeout=timeout)
+        provider_timeout = timeout
+        if isinstance(provider, MultiwebProvider):
+            provider_timeout *= len(provider.sources)
+        return await asyncio.wait_for(provider.search(query), timeout=provider_timeout)
     except asyncio.TimeoutError:
         return []
     except Exception:
         return []
 
 
-async def _search_all(
+async def _search_cascade(
     providers: list[BaseProvider],
     query: SongQuery,
+    prefer_synced: bool,
+    plain_ok: bool,
+    stats: dict[str, dict] | None = None,
     timeout: float = 10.0,
-) -> list[LyricsResult]:
-    """Search all providers concurrently and collect results."""
-    tasks = [
-        asyncio.create_task(_search_one(p, query, timeout))
-        for p in providers
-    ]
-    all_results: list[LyricsResult] = []
-    for task in tasks:
-        try:
-            results = await task
-            all_results.extend(results)
-        except Exception:
-            pass
-    return all_results
+) -> Optional[LyricsResult]:
+    """Try providers in configured order until one returns valid lyrics."""
+    for provider in providers:
+        if stats is not None:
+            stats[provider.name]["queries"] += 1
+        results = await _search_one(provider, query, timeout)
+        best = select_best(
+            results,
+            query,
+            prefer_synced=prefer_synced,
+            plain_ok=plain_ok,
+        )
+        if best is not None:
+            if stats is not None:
+                stats[provider.name]["found"] += 1
+            return best
+    return None
+
+
+async def _process_files_concurrently(
+    files: list[Path],
+    processor: Callable[[Path], Awaitable[str]],
+    jobs: int,
+) -> list[str]:
+    """Run per-file processors concurrently without exceeding the worker limit."""
+    semaphore = asyncio.Semaphore(max(1, jobs))
+
+    async def process_one(path: Path) -> str:
+        async with semaphore:
+            return await processor(path)
+
+    return await asyncio.gather(*(process_one(path) for path in files))
 
 
 # ─── Result selection ────────────────────────────────────────────
@@ -255,11 +283,16 @@ def select_best(
     if not results:
         return None
 
-    # Filter: reject results with very low confidence
-    MIN_CONFIDENCE = 0.3
-    candidates = [r for r in results if r.confidence >= MIN_CONFIDENCE]
+    candidates = [
+        result
+        for result in results
+        if result.confidence >= 0.3
+        and _has_useful_lyrics(result)
+        and _matches_query(result, query)
+        and (not prefer_synced or plain_ok or result.has_sync)
+    ]
     if not candidates:
-        candidates = results  # fallback to all
+        return None
 
     # Sort by: sync level (if preferred), then confidence, then entry count
     def sort_key(r: LyricsResult) -> tuple:
@@ -272,16 +305,32 @@ def select_best(
         )
 
     candidates.sort(key=sort_key, reverse=True)
+    return candidates[0]
 
-    best = candidates[0]
 
-    # If we prefer synced but only have plain and plain_ok is False
-    if prefer_synced and best.is_plain and not plain_ok:
-        synced = [r for r in candidates if r.has_sync]
-        if not synced:
-            return None  # no synced lyrics available
+def _has_useful_lyrics(result: LyricsResult) -> bool:
+    if result.has_sync:
+        return any(text.strip() for _, text in result.timed_entries)
+    return bool(result.plain_text.strip())
 
-    return best
+
+def _normalize_match_text(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", value).casefold()
+    return "".join(
+        character
+        for character in decomposed
+        if not unicodedata.combining(character) and character.isalnum()
+    )
+
+
+def _matches_query(result: LyricsResult, query: SongQuery) -> bool:
+    if query.isrc and result.isrc:
+        return result.isrc.casefold() == query.isrc.casefold()
+
+    for actual, expected in ((result.title, query.title), (result.artist, query.artist)):
+        if actual and expected and _normalize_match_text(actual) != _normalize_match_text(expected):
+            return False
+    return True
 
 
 # ─── File collection ─────────────────────────────────────────────
@@ -317,7 +366,7 @@ def _collect_files(target: str, fmt: str, session: str) -> list[Path]:
             p = Path(fpath)
             if p.is_file():
                 files.append(p)
-        return files
+        return sorted(set(files))
 
     target_path = Path(target)
     if target_path.is_file():
@@ -367,23 +416,33 @@ def run_lyrics(args) -> int:
             _write_summary(summary_file, 0, 0, 0)
         return 0
 
-    # Process each file
-    found = 0
-    notfound = 0
-    already = 0
     stats: dict[str, dict] = {}  # per-provider stats
 
     for provider in providers:
         stats[provider.name] = {"queries": 0, "found": 0, "errors": 0}
 
-    for fpath in files:
-        result = _process_file(fpath, providers, lang, prefer_synced, upgrade_plain, overwrite, mode, stats)
-        if result == "found":
-            found += 1
-        elif result == "already":
-            already += 1
-        else:
-            notfound += 1
+    async def process_file(fpath: Path) -> str:
+        return await _process_file(
+            fpath,
+            providers,
+            lang,
+            prefer_synced,
+            upgrade_plain,
+            overwrite,
+            mode,
+            stats,
+        )
+
+    results = asyncio.run(
+        _process_files_concurrently(
+            files,
+            process_file,
+            jobs=getattr(args, "jobs", 3),
+        )
+    )
+    found = results.count("found")
+    already = results.count("already")
+    notfound = len(results) - found - already
 
     # Print summary
     print()
@@ -407,7 +466,7 @@ def run_lyrics(args) -> int:
     return 0
 
 
-def _process_file(
+async def _process_file(
     fpath: Path,
     providers: list[BaseProvider],
     lang: str,
@@ -448,30 +507,19 @@ def _process_file(
         duration=duration,
         isrc=isrc,
         language=lang,
+        prefer_synced=prefer_synced,
     )
 
-    # Concurrent search
-    loop = asyncio.new_event_loop()
-    try:
-        all_results = loop.run_until_complete(_search_all(providers, query, timeout=10.0))
-    finally:
-        loop.close()
-
-    # Update stats
-    for r in all_results:
-        if r.provider in stats:
-            stats[r.provider]["found"] += 1
-    for p in providers:
-        stats[p.name]["queries"] += 1
-
-    if not all_results:
-        print(f"  ✘ {fpath.name} — no se encontraron letras")
-        return "notfound"
-
-    # Select best
-    best = select_best(all_results, query, prefer_synced=prefer_synced, plain_ok=not prefer_synced)
+    best = await _search_cascade(
+        providers,
+        query,
+        prefer_synced=prefer_synced,
+        plain_ok=not prefer_synced,
+        stats=stats,
+        timeout=10.0,
+    )
     if best is None:
-        print(f"  ✘ {fpath.name} — sin letras sincronizadas (usa --plain-ok para aceptar planas)")
+        print(f"  ✘ {fpath.name} — no se encontraron letras")
         return "notfound"
 
     # Embed or write file

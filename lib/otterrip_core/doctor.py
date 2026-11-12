@@ -88,13 +88,13 @@ def run_doctor(args) -> int:
         print("  ! aiohttp no encontrado")
         print("      → Instala: pip install aiohttp")
 
-    # syncedlyrics (optional)
+    # syncedlyrics
     has_synced = importlib.util.find_spec("syncedlyrics") is not None
     if has_synced:
         print("  ✔ syncedlyrics (Multi-Web disponible)")
     else:
-        print("  ℹ syncedlyrics no instalado (Multi-Web desactivado)")
-        print("      → Opcional: pip install syncedlyrics")
+        print("  ! syncedlyrics no encontrado (Multi-Web desactivado)")
+        print("      → Reinstala las dependencias de OtterRip desde el entorno virtual")
 
     # Destination directory
     if dest:

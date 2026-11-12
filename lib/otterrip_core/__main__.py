@@ -24,6 +24,16 @@ from otterrip_core import repair
 from otterrip_core import convert
 
 
+def positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="otterrip_core",
@@ -56,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--session", default="")
     p.add_argument("--summary", default="")
     p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--jobs", type=positive_int, default=3)
 
     # --- lyrics-tool ---
     p = sub.add_parser("lyrics-tool", help="Lyrics utility commands")

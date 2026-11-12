@@ -2,8 +2,8 @@
 """Multi-Web provider adapter (uses syncedlyrics library)."""
 from __future__ import annotations
 
+import asyncio
 import importlib.util
-from typing import Optional
 
 from otterrip_core.models import LyricsResult, SyncLevel
 from otterrip_core.adapters.base import BaseProvider, SongQuery
@@ -15,102 +15,74 @@ class MultiwebProvider(BaseProvider):
     name = "multiweb"
     enabled_by_default = True
     requires_credentials = False
+    DEFAULT_SOURCES = ("musixmatch", "lrclib", "netease", "megalobiz", "genius")
+
+    def __init__(self, sources: tuple[str, ...] | None = None):
+        self.sources = self.DEFAULT_SOURCES if sources is None else sources
 
     def is_available(self) -> bool:
         return importlib.util.find_spec("syncedlyrics") is not None
 
     async def search(self, query: SongQuery) -> list[LyricsResult]:
-        results: list[LyricsResult] = []
         if not self.is_available():
-            return results
-
+            return []
         try:
-            from syncedlyrics import (
-                get_genius_lyrics,
-                get_musixmatch_lyrics,
-                get_synced_lyrics,
-                get_lyrics_fallback,
-                format_lyrics_lrc,
-            )
+            from syncedlyrics import search
+        except ImportError:
+            return []
 
-            # Try synced lyrics first (word-level)
-            synced_text = ""
+        search_term = f"{query.title} {query.artist}".strip()
+        for source in self.sources:
             try:
-                synced_text = get_synced_lyrics(
-                    query.title,
-                    query.artist,
-                    search_ytm=True,
-                    search_klyrics=True,
-                    search_synced=True,
-                    search_musixmatch=True,
+                text = await asyncio.to_thread(
+                    search,
+                    search_term,
+                    providers=[source],
+                    synced_only=query.prefer_synced,
+                    plain_only=not query.prefer_synced,
+                    lang=query.language if source == "musixmatch" else None,
                 )
-            except TypeError:
-                # Older version with fewer params
-                try:
-                    synced_text = get_synced_lyrics(query.title, query.artist)
-                except Exception:
-                    synced_text = ""
+            except Exception:
+                continue
+            if not isinstance(text, str) or not text.strip():
+                continue
 
-            if synced_text:
-                # Detect sync level
-                entries = self._parse_lrc(synced_text)
-                sync_level = SyncLevel.NONE
-                if entries:
-                    # Heuristic: if many short entries, likely word-level
-                    avg_len = sum(len(t) for _, t in entries) / len(entries)
-                    if avg_len < 5:
-                        sync_level = SyncLevel.WORDS
-                    elif avg_len < 15:
-                        sync_level = SyncLevel.SYLLABLES
-                    else:
-                        sync_level = SyncLevel.LINES
-
-                results.append(LyricsResult(
+            entries = self._parse_lrc(text)
+            if entries and any(line.strip() for _, line in entries):
+                result = LyricsResult(
                     provider=self.name,
                     title=query.title,
                     artist=query.artist,
                     album=query.album,
                     duration=query.duration,
                     language=query.language,
-                    sync_level=sync_level,
-                    plain_text="\n".join(t for _, t in entries) if entries else synced_text,
+                    sync_level=SyncLevel.LINES,
+                    plain_text="\n".join(line for _, line in entries),
                     timed_entries=entries,
                     original_format="lrc",
                     confidence=0.7,
-                ))
+                )
+                return [result]
+            if query.prefer_synced or not text.strip():
+                continue
 
-            # Try plain lyrics as fallback
-            if not results:
-                plain_text = ""
-                try:
-                    plain_text = get_lyrics_fallback(query.title, query.artist)
-                except Exception:
-                    plain_text = ""
+            return [LyricsResult(
+                provider=self.name,
+                title=query.title,
+                artist=query.artist,
+                album=query.album,
+                duration=query.duration,
+                language=query.language,
+                plain_text=text.strip(),
+                original_format="txt",
+                confidence=0.7,
+            )]
 
-                if plain_text:
-                    results.append(LyricsResult(
-                        provider=self.name,
-                        title=query.title,
-                        artist=query.artist,
-                        album=query.album,
-                        duration=query.duration,
-                        language=query.language,
-                        sync_level=SyncLevel.NONE,
-                        plain_text=plain_text,
-                        original_format="txt",
-                        confidence=0.5,
-                    ))
-
-        except ImportError:
-            pass
-        except Exception:
-            pass
-
-        return results
+        return []
 
     @classmethod
     def max_sync_level(cls) -> SyncLevel:
-        return SyncLevel.WORDS
+        return SyncLevel.LINES
 
     @staticmethod
     def _parse_lrc(text: str) -> list[tuple[float, str]]:

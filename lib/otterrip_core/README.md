@@ -1,6 +1,6 @@
 # OtterRip Core — Backend Python
 
-Backend Python para OtterRip v7.1, descargador de audio con letras sincronizadas.
+Backend Python para OtterRip v7.2, descargador de audio con letras sincronizadas.
 
 ## Arquitectura
 
@@ -8,7 +8,7 @@ Backend Python para OtterRip v7.1, descargador de audio con letras sincronizadas
 lib/otterrip_core/
 ├── __main__.py          # CLI dispatcher (py_core)
 ├── models.py            # LyricsResult, SyncLevel, SongQuery
-├── lyrics.py            # Motor multiproveedor concurrente
+├── lyrics.py            # Fallback y procesamiento concurrente por pista
 ├── lyrics_tool.py       # Utilidades: show, compare, shift, convert, set
 ├── fix_metadata.py      # Reparación de metadatos y portadas
 ├── verify_session.py    # Verificación de integridad de archivos
@@ -27,16 +27,20 @@ lib/otterrip_core/
 
 ## Motor de Letras
 
-### Búsqueda concurrente
+### Fallback y concurrencia
 
-Cuando se procesa una canción, el motor inicia búsquedas simultáneas en todos los proveedores habilitados mediante `asyncio`. Cada proveedor tiene un timeout independiente de 10 segundos. Un proveedor lento o caído no bloquea a los demás.
+Los proveedores configurados se consultan en orden. Si un proveedor falla,
+devuelve contenido vacío o un resultado inválido, se prueba el siguiente. Las
+consultas síncronas de `syncedlyrics` se ejecutan fuera del loop de `asyncio`.
+Las pistas se procesan concurrentemente con el límite `--jobs`, que el script
+Bash ajusta al número configurado de workers.
 
 ### Evaluación y selección
 
-Cada resultado se evalúa considerando:
-- **Nivel de sincronización**: sílabas > palabras > líneas > plana
-- **Confianza de coincidencia**: basada en título, artista, ISRC, duración
-- **Integridad**: número de entradas, longitud del texto
+Se rechazan resultados vacíos, con confianza menor a 0.3 o que no coincidan en
+título/artista normalizados cuando la fuente incluye esos datos. Los resultados
+de `syncedlyrics` se solicitan con el texto de título y artista exactos y solo
+se aceptan si incluyen entradas LRC válidas.
 
 El mejor resultado se selecciona automáticamente.
 
@@ -51,8 +55,16 @@ El mejor resultado se selecciona automáticamente.
 
 | Proveedor | Estado | Sync | Auth |
 |-----------|--------|------|------|
-| LRCLIB | Implementado | Líneas | Ninguna |
-| Multi-Web (syncedlyrics) | Implementado | Palabras | Ninguna |
+| LRCLIB | Implementado | Líneas / plana | Ninguna |
+| Musixmatch (syncedlyrics) | Implementado | Líneas | Ninguna |
+| LRCLIB (syncedlyrics) | Implementado | Líneas / plana | Ninguna |
+| NetEase (syncedlyrics) | Implementado | Líneas | Ninguna |
+| Megalobiz (syncedlyrics) | Implementado | Líneas | Ninguna |
+| Genius (syncedlyrics) | Implementado | Plana | Ninguna |
+
+Las fuentes Multi-Web se consultan secuencialmente. KuGou, BiniLyrics,
+PaxSenix, Unison y YouTube Music/Captions no están disponibles en la API
+integrada y no se habilitan.
 
 ## Comandos
 
@@ -61,7 +73,7 @@ El mejor resultado se selecciona automáticamente.
 python3 -m otterrip_core doctor
 
 # Buscar e incrustar letras
-python3 -m otterrip_core lyrics <carpeta> mp3 --providers lrclib,multiweb
+python3 -m otterrip_core lyrics <carpeta> mp3 --providers lrclib,multiweb --jobs 3
 
 # Reparar metadatos
 python3 -m otterrip_core repair <carpeta> --apply

@@ -2,15 +2,32 @@
 """Basic tests for otterrip_core modules."""
 import unittest
 import asyncio
+from contextlib import redirect_stdout
+from io import StringIO
+import sys
 import tempfile
 import json
+import types
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
+from mutagen.id3 import ID3, SYLT, USLT
+from mutagen.mp3 import MP3
+
 from otterrip_core.models import LyricsResult, SyncLevel
-from otterrip_core.adapters.base import SongQuery
+from otterrip_core.adapters.base import BaseProvider, SongQuery
 from otterrip_core.adapters.lrclib import LrclibProvider, _parse_lrc
-from otterrip_core.lyrics import select_best, _format_lrc
+from otterrip_core.adapters.multiweb import MultiwebProvider
+from otterrip_core.lyrics import (
+    _format_lrc,
+    _collect_files,
+    _embed_lyrics,
+    _process_files_concurrently,
+    _search_cascade,
+    run_lyrics,
+    select_best,
+)
 
 
 class TestModels(unittest.TestCase):
@@ -94,8 +111,49 @@ class TestSelectBest(unittest.TestCase):
             LyricsResult(provider="a", sync_level=SyncLevel.NONE, confidence=0.1, plain_text="wrong"),
         ]
         best = select_best(results, SongQuery(title="t", artist="a"), prefer_synced=False)
-        # Should still return something when plain_ok
-        self.assertIsNotNone(best)
+        self.assertIsNone(best)
+
+    def test_rejects_empty_lyrics(self):
+        result = LyricsResult(
+            provider="a",
+            sync_level=SyncLevel.LINES,
+            confidence=0.9,
+            timed_entries=[(0.0, " ")],
+        )
+        self.assertIsNone(select_best([result], SongQuery(title="t", artist="a")))
+
+    def test_rejects_mismatched_title_and_artist(self):
+        result = LyricsResult(
+            provider="a",
+            title="Different song",
+            artist="Different artist",
+            confidence=0.9,
+            plain_text="Some lyrics",
+        )
+        self.assertIsNone(
+            select_best(
+                [result],
+                SongQuery(title="Wanted song", artist="Wanted artist"),
+                prefer_synced=False,
+                plain_ok=True,
+            )
+        )
+
+    def test_accepts_normalized_exact_match(self):
+        result = LyricsResult(
+            provider="a",
+            title="Beyoncé - Déjà Vu!",
+            artist="Beyoncé",
+            confidence=0.9,
+            plain_text="Some lyrics",
+        )
+        best = select_best(
+            [result],
+            SongQuery(title="Beyonce Deja Vu", artist="Beyonce"),
+            prefer_synced=False,
+            plain_ok=True,
+        )
+        self.assertIs(result, best)
 
     def test_no_results(self):
         best = select_best([], SongQuery(title="t", artist="a"))
@@ -117,6 +175,229 @@ class TestFormatLrc(unittest.TestCase):
         text = _format_lrc(entries)
         self.assertIn("[00:00.000] start", text)
         self.assertIn("[01:05.500] one minute", text)
+
+
+class TestMultiwebAdapter(unittest.TestCase):
+    def test_uses_only_verified_provider_names(self):
+        self.assertEqual(MultiwebProvider.DEFAULT_SOURCES, (
+            "musixmatch",
+            "lrclib",
+            "netease",
+            "megalobiz",
+            "genius",
+        ))
+
+    def test_falls_back_through_supported_syncedlyrics_sources(self):
+        calls = []
+
+        def fake_search(search_term, **kwargs):
+            calls.append((search_term, kwargs))
+            if kwargs["providers"] == ["musixmatch"]:
+                return None
+            return "[00:01.00] A lyric line"
+
+        fake_module = types.ModuleType("syncedlyrics")
+        fake_module.search = fake_search
+        provider = MultiwebProvider()
+        query = SongQuery(title="Song", artist="Artist", language="es")
+
+        with patch.object(provider, "is_available", return_value=True):
+            with patch.dict(sys.modules, {"syncedlyrics": fake_module}):
+                results = asyncio.run(provider.search(query))
+
+        self.assertEqual([call[1]["providers"] for call in calls], [
+            ["musixmatch"],
+            ["lrclib"],
+        ])
+        self.assertTrue(all(call[1]["synced_only"] for call in calls))
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].timed_entries, [(1.0, "A lyric line")])
+
+    def test_returns_plain_lyrics_when_sync_is_not_preferred(self):
+        calls = []
+
+        def fake_search(search_term, **kwargs):
+            calls.append(kwargs)
+            if kwargs["providers"] == ["genius"]:
+                return "Plain lyric text"
+            return None
+
+        fake_module = types.ModuleType("syncedlyrics")
+        fake_module.search = fake_search
+        provider = MultiwebProvider()
+        query = SongQuery(title="Song", artist="Artist", prefer_synced=False)
+
+        with patch.object(provider, "is_available", return_value=True):
+            with patch.dict(sys.modules, {"syncedlyrics": fake_module}):
+                results = asyncio.run(provider.search(query))
+
+        self.assertEqual(calls[-1]["providers"], ["genius"])
+        self.assertTrue(all(call["plain_only"] for call in calls))
+        self.assertFalse(any(call["synced_only"] for call in calls))
+        self.assertEqual(results[0].plain_text, "Plain lyric text")
+        self.assertFalse(results[0].has_sync)
+
+
+class TestLyricsConcurrency(unittest.TestCase):
+    def test_processes_files_within_worker_limit(self):
+        async def run_test():
+            active = 0
+            maximum = 0
+
+            async def process_file(path):
+                nonlocal active, maximum
+                active += 1
+                maximum = max(maximum, active)
+                await asyncio.sleep(0.01)
+                active -= 1
+                return path.name
+
+            files = [Path(f"track-{index}.mp3") for index in range(8)]
+            results = await _process_files_concurrently(files, process_file, jobs=3)
+            return maximum, results
+
+        maximum, results = asyncio.run(run_test())
+        self.assertEqual(maximum, 3)
+        self.assertEqual(len(results), 8)
+
+    def test_run_lyrics_searches_and_embeds_concurrently(self):
+        active = 0
+        maximum = 0
+
+        class FakeProvider(BaseProvider):
+            name = "lrclib"
+
+            async def search(self, query):
+                nonlocal active, maximum
+                active += 1
+                maximum = max(maximum, active)
+                await asyncio.sleep(0.01)
+                active -= 1
+                return [LyricsResult(
+                    provider=self.name,
+                    title=query.title,
+                    artist=query.artist,
+                    confidence=0.9,
+                    sync_level=SyncLevel.LINES,
+                    timed_entries=[(1.0, "line")],
+                )]
+
+        files = [Path(f"track-{index}.mp3") for index in range(6)]
+        args = SimpleNamespace(
+            target="",
+            fmt="mp3",
+            host="https://lrclib.net",
+            mode="embed",
+            providers="lrclib",
+            lang="",
+            plain_ok=False,
+            upgrade_plain=False,
+            session="",
+            summary="",
+            overwrite=False,
+            jobs=3,
+        )
+        with patch("otterrip_core.lyrics._build_providers", return_value=[FakeProvider()]):
+            with patch("otterrip_core.lyrics._collect_files", return_value=files):
+                with patch("otterrip_core.lyrics._get_audio_file", side_effect=lambda path: Path(path)):
+                    with patch(
+                        "otterrip_core.lyrics._get_tags",
+                        side_effect=lambda audio: {"title": audio.stem, "artist": "Artist"},
+                    ):
+                        with patch("otterrip_core.lyrics._get_duration", return_value=None):
+                            with patch("otterrip_core.lyrics._has_lyrics", return_value=False):
+                                with patch("otterrip_core.lyrics._embed_lyrics", return_value=True) as embed:
+                                    with redirect_stdout(StringIO()):
+                                        result = run_lyrics(args)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(maximum, 3)
+        self.assertEqual(embed.call_count, 6)
+
+    def test_session_files_are_deduplicated_before_concurrent_processing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio_path = Path(tmp) / "track.mp3"
+            audio_path.touch()
+            session_path = Path(tmp) / "session.jsonl"
+            session_path.write_text(
+                f'{{"file": "{audio_path}"}}\n{{"file": "{audio_path}"}}\n',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _collect_files(tmp, "mp3", str(session_path)),
+                [audio_path],
+            )
+
+
+class TestLyricsEmbedding(unittest.TestCase):
+    def test_mp3_embeds_real_timestamps_in_sylt_and_uslt(self):
+        audio = MP3.__new__(MP3)
+        audio.tags = ID3()
+        lyrics = LyricsResult(
+            provider="test",
+            sync_level=SyncLevel.LINES,
+            plain_text="First line\nSecond line",
+            timed_entries=[(1.234, "First line"), (5.0, "Second line")],
+        )
+
+        with patch.object(MP3, "save"):
+            self.assertTrue(_embed_lyrics(audio, lyrics))
+
+        synced_frames = audio.tags.getall("SYLT")
+        plain_frames = audio.tags.getall("USLT")
+        self.assertEqual(len(synced_frames), 1)
+        self.assertIsInstance(synced_frames[0], SYLT)
+        self.assertEqual(synced_frames[0].format, 2)
+        self.assertEqual(synced_frames[0].text, [
+            ("First line", 1234),
+            ("Second line", 5000),
+        ])
+        self.assertEqual(len(plain_frames), 1)
+        self.assertIsInstance(plain_frames[0], USLT)
+        self.assertEqual(plain_frames[0].text, "First line\nSecond line")
+
+    def test_cascade_uses_next_provider_after_invalid_result(self):
+        query = SongQuery(title="Song", artist="Artist")
+
+        class FakeProvider(BaseProvider):
+            def __init__(self, name, results):
+                self.name = name
+                self.results = results
+                self.calls = 0
+
+            async def search(self, _query):
+                self.calls += 1
+                return self.results
+
+        invalid = LyricsResult(
+            provider="first",
+            confidence=0.9,
+            plain_text="",
+        )
+        valid = LyricsResult(
+            provider="second",
+            title="Song",
+            artist="Artist",
+            confidence=0.9,
+            sync_level=SyncLevel.LINES,
+            timed_entries=[(1.0, "line")],
+        )
+        first = FakeProvider("first", [invalid])
+        second = FakeProvider("second", [valid])
+
+        best = asyncio.run(
+            _search_cascade(
+                [first, second],
+                query,
+                prefer_synced=True,
+                plain_ok=False,
+            )
+        )
+
+        self.assertIs(valid, best)
+        self.assertEqual(first.calls, 1)
+        self.assertEqual(second.calls, 1)
 
 
 class TestMergeSessions(unittest.TestCase):

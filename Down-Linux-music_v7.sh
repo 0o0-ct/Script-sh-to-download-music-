@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════
-#  OtterRip v7.1 — Descargador de audio + letras (LRCLIB)
+#  OtterRip v7.2 — Descargador de audio + letras
 #  Basado en OtterRip v7.0 (misma filosofía y licencia)
 #
-#  Novedades v7.1 (ver README.md y CHANGELOG.md):
+#  Novedades v7.2 (ver README.md y CHANGELOG.md):
 #   · Entorno virtual aislado (sin --break-system-packages)
 #   · Verificación real de integridad tras cada descarga
 #   · Sesiones persistentes y recuperables tras interrupciones
@@ -14,7 +14,7 @@
 # ═══════════════════════════════════════════════════════════════
 set -Eeuo pipefail
 
-OTTERRIP_VERSION="7.1.0"
+OTTERRIP_VERSION="7.2.0"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
     printf 'OtterRip necesita Bash 4.4 o superior (detectado %s).\n' "$BASH_VERSION" >&2
@@ -29,7 +29,7 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
 LIB_DIR="$SCRIPT_DIR/lib"
 REQUIREMENTS_FILE="$SCRIPT_DIR/requirements.txt"
-BACKEND_SHA256="05e73302de6551cf11932bf339c04acf3bccd4386549d7a6681c641ec61c79cf"
+BACKEND_SHA256="b488fa97cbe8053c68fad9b1110a5e5aa5669e5d88497f3db80b63e6087036ef"
 BACKEND_ARCHIVE_URL="https://raw.githubusercontent.com/0o0-ct/Script-sh-to-download-music-/v${OTTERRIP_VERSION}/packages/otterrip-backend-v${OTTERRIP_VERSION}.tar.gz"
 
 # ── Directorios XDG (los valores relativos se ignoran, según la especificación)
@@ -468,15 +468,26 @@ clear_screen() { clear 2>/dev/null || true; }
 pause_enter() { read -rp "  Enter para continuar..." _ || true; }
 
 is_positive_int() {
-    [[ "${1-}" =~ ^[0-9]+$ ]] && (( 10#${1} > 0 ))
+    local value="${1-}"
+    [[ "$value" =~ ^[0-9]+$ ]] || return 1
+    while [[ ${#value} -gt 1 && "${value:0:1}" == "0" ]]; do
+        value="${value:1}"
+    done
+    [[ "$value" != "0" ]]
 }
 
 normalize_jobs() {
     local v="${1:-3}"
     is_positive_int "$v" || v=3
-    v=$((10#$v))
-    (( v < 1 )) && v=1
-    (( v > 8 )) && v=8
+    while [[ ${#v} -gt 1 && "${v:0:1}" == "0" ]]; do
+        v="${v:1}"
+    done
+    if [[ ${#v} -gt 2 ]]; then
+        v=32
+    else
+        v=$((10#$v))
+        (( v > 32 )) && v=32
+    fi
     printf '%s' "$v"
 }
 PARALLEL_JOBS="$(normalize_jobs "$PARALLEL_JOBS")"
@@ -790,7 +801,7 @@ python_version_ok() {
 }
 
 libs_ok_for() {
-    "${1-python3}" -c 'import aiohttp, mutagen, requests' >/dev/null 2>&1
+    "${1-python3}" -c 'import aiohttp, mutagen, requests; from syncedlyrics import search; from importlib.metadata import version; v=tuple(map(int, version("syncedlyrics").split(".")[:3])); assert (1, 0, 1) <= v < (2, 0, 0)' >/dev/null 2>&1
 }
 
 # Instala paquetes Python SOLO dentro del venv de OtterRip.
@@ -858,12 +869,10 @@ ensure_python_env() {
     fi
 
     if ! libs_ok_for "$PYBIN"; then
-        echo "  ${YELLOW}⚙${NC} Instalando librerías Python en el venv: mutagen, requests..."
+        echo "  ${YELLOW}⚙${NC} Instalando dependencias Python de OtterRip en el venv..."
         venv_pip_install -r "$REQUIREMENTS_FILE" || {
-            echo "    Alternativa con paquetes del sistema (sin venv):"
-            echo "      Debian/Ubuntu: sudo apt install python3-mutagen python3-requests"
-            echo "      Arch:          sudo pacman -S python-mutagen python-requests"
-            echo "      Fedora:        sudo dnf install python3-mutagen python3-requests"
+            echo "    Verifica la conexión y que pip pueda instalar syncedlyrics>=1.0.1,<2."
+            echo "    Multi-Web necesita esa API; LRCLIB por sí solo no sustituye el fallback configurado."
             return 1
         }
     fi
@@ -1016,7 +1025,7 @@ install_deps() {
         echo "  ${RED}✘${NC} El backend Python instalado no pasó la prueba de inicio."
         return 1
     fi
-    echo "  ${GREEN}✔${NC} aiohttp + mutagen + requests listos ($([[ "$PYBIN" == "$VENV_DIR/bin/python" ]] && echo 'venv aislado' || echo 'Python del sistema'))"
+    echo "  ${GREEN}✔${NC} Dependencias Python listas ($([[ "$PYBIN" == "$VENV_DIR/bin/python" ]] && echo 'venv aislado' || echo 'Python del sistema'))"
     ensure_ytdlp || return 1
     setup_js_runtime
 
@@ -1024,7 +1033,7 @@ install_deps() {
     if [[ "$SYNCEDLYRICS_AVAILABLE" == "true" ]]; then
         echo "  ${GREEN}✔${NC} syncedlyrics disponible (Multi-Web activo)"
     else
-        echo "  ${DIM}○${NC} syncedlyrics no instalado (opcional; Multi-Web inactivo)"
+        echo "  ${RED}✘${NC} syncedlyrics no instalado; Multi-Web no está disponible"
     fi
 
     # Avisos (yt-dlp antiguo, etc.) detectados por el diagnóstico
@@ -1331,7 +1340,7 @@ process_lyrics() {
         return 0
     fi
     lyrics_common_args
-    local -a args=(lyrics "$dir" "$fmt" "${LYRICS_ARGS[@]}")
+    local -a args=(lyrics "$dir" "$fmt" "${LYRICS_ARGS[@]}" --jobs "$PARALLEL_JOBS")
     [[ -n "$session_file" ]] && args+=(--session "$session_file")
     [[ -n "$summary_file" ]] && args+=(--summary "$summary_file")
     py_core "${args[@]}" || rc=$?
@@ -1373,11 +1382,11 @@ menu() {
 
         echo -e "${BOLD}${CYAN}"
         echo "  ╔══════════════════════════════════════════════════╗"
-        echo "  ║                 🦦 OTTER RIP v7.1                ║"
+        echo "  ║                 🦦 OTTER RIP v7.2                ║"
         echo "  ╚══════════════════════════════════════════════════╝${NC}"
         printf '  %sPerfil:%s      %s\n' "$BOLD" "$NC" "$PROFILE"
         printf '  %sDuración:%s    >%ss y ≤ %s\n' "$BOLD" "$NC" "$DUR_MIN" "$(format_seconds "$DUR_MAX")"
-        printf '  %sWorkers:%s     %s (playlists/álbumes)\n' "$BOLD" "$NC" "$PARALLEL_JOBS"
+        printf '  %sWorkers:%s     %s (descargas y letras)\n' "$BOLD" "$NC" "$PARALLEL_JOBS"
         printf '  %sLetras:%s      %b (%s)\n' "$BOLD" "$NC" "$lyrics_state" "$mode_label"
         printf '  %sProveedor:%s   %s\n' "$BOLD" "$NC" "$provider"
         printf '  %sServidor:%s    %s\n' "$BOLD" "$NC" "$LRCLIB_HOST"
@@ -1483,16 +1492,22 @@ menu_duration() {
 menu_workers() {
     clear_screen
     echo -e "${BOLD}${CYAN}══ Descargas paralelas ══${NC}\n"
-    echo -e "  Workers simultáneos para playlists y álbumes."
-    echo -e "  ${DIM}1 = secuencial · 2-8 = descarga paralela real${NC}"
-    echo -e "  ${DIM}Cada worker usa red, CPU (ffmpeg) y puede provocar bloqueos del servicio; no se aumenta solo.${NC}"
+    echo -e "  Workers simultáneos para playlists, álbumes y letras por pista."
+    echo -e "  ${DIM}1 = secuencial · 2-32 = descarga paralela real${NC}"
+    echo -e "  ${DIM}Más workers aumentan el uso de red/CPU y las solicitudes a los servicios.${NC}"
     echo ""
     printf '  Actual: %s%s worker(s)%s\n\n' "$BOLD" "$PARALLEL_JOBS" "$NC"
     local w="" cpus=1
-    read -rp "  Workers [1-8] (Enter=$PARALLEL_JOBS): " w || return 0
+    read -rp "  Workers [1-32] (Enter=$PARALLEL_JOBS): " w || return 0
     [[ -z "$w" ]] && return 0
-    if ! is_positive_int "$w" || (( 10#$w < 1 || 10#$w > 8 )); then
-        echo -e "  ${RED}✘ Valor inválido. Debe estar entre 1 y 8.${NC}"; sleep 1.5; return 0
+    if ! is_positive_int "$w"; then
+        echo -e "  ${RED}✘ Valor inválido. Debe estar entre 1 y 32.${NC}"; sleep 1.5; return 0
+    fi
+    while [[ ${#w} -gt 1 && "${w:0:1}" == "0" ]]; do
+        w="${w:1}"
+    done
+    if [[ ${#w} -gt 2 ]] || (( 10#$w > 32 )); then
+        echo -e "  ${RED}✘ Valor inválido. Debe estar entre 1 y 32.${NC}"; sleep 1.5; return 0
     fi
     PARALLEL_JOBS=$((10#$w))
     cpus="$(nproc 2>/dev/null || printf '1')"
@@ -1589,8 +1604,8 @@ menu_lyrics() {
             multi="${CYAN}$(provider_label)${NC}"
         fi
         echo -e "${BOLD}${CYAN}══ Configuración de letras ══${NC}\n"
-        echo -e "  OtterRip usa LRCLIB (sin API key). Multi-Web es opcional."
-        echo -e "  ${DIM}Toda letra se valida (título, artista, duración, formato) antes de guardarse.${NC}"
+        echo -e "  OtterRip usa LRCLIB y Multi-Web (sin API key)."
+        echo -e "  ${DIM}Toda letra se valida por contenido, título y artista antes de guardarse.${NC}"
         echo ""
         printf '  %sEstado:%s        %b\n' "$BOLD" "$NC" "$state"
         printf '  %sModo:%s          %s\n' "$BOLD" "$NC" "$mode_label"
@@ -1607,7 +1622,7 @@ menu_lyrics() {
         echo -e "  ${CYAN}4)${NC} Servidor oficial (https://lrclib.net)"
         echo -e "  ${CYAN}5)${NC} Servidor local (http://localhost:3300)"
         echo -e "  ${CYAN}6)${NC} URL de servidor personalizada"
-        echo -e "  ${CYAN}7)${NC} Instalar / verificar syncedlyrics (opcional)"
+        echo -e "  ${CYAN}7)${NC} Verificar / reinstalar syncedlyrics (Multi-Web)"
         echo -e "  ${CYAN}8)${NC} Idioma preferido (es, en, pt, fr, it, de; vacío = cualquiera)"
         echo -e "  ${CYAN}9)${NC} Proveedores (LRCLIB / Multi-Web / ambos)"
         echo -e "  ${CYAN}10)${NC} Priorizar letras sincronizadas (sí/no)"
@@ -1625,7 +1640,7 @@ menu_lyrics() {
                     FETCH_LYRICS=true
                     echo -e "  ${GREEN}Búsqueda de letras ACTIVADA.${NC}"
                     if [[ "$SYNCEDLYRICS_AVAILABLE" != "true" ]]; then
-                        echo -e "  ${DIM}Multi-Web seguirá inactivo hasta instalar syncedlyrics (opción 7).${NC}"
+                        echo -e "  ${DIM}Multi-Web requiere reinstalar las dependencias (opción 7).${NC}"
                     fi
                 fi
                 sleep 1
@@ -1650,15 +1665,16 @@ menu_lyrics() {
                 if [[ "$SYNCEDLYRICS_AVAILABLE" == "true" ]]; then
                     echo -e "  ${GREEN}✔ syncedlyrics ya está instalado.${NC}"
                     sleep 0.8
-                elif confirm "¿Instalar syncedlyrics en el entorno aislado de OtterRip?"; then
-                    echo -e "  ${YELLOW}⚙${NC} Instalando syncedlyrics..."
+                elif confirm "¿Instalar dependencias de letras en el entorno aislado de OtterRip?"; then
+                    echo -e "  ${YELLOW}⚙${NC} Instalando dependencias de letras..."
                     if [[ "$PYBIN" != "$VENV_DIR/bin/python" ]]; then
                         if create_venv; then
                             PYBIN="$VENV_DIR/bin/python"
                             venv_pip_install -r "$SCRIPT_DIR/requirements.txt" || true
                         fi
+                    else
+                        venv_pip_install -r "$SCRIPT_DIR/requirements.txt" || true
                     fi
-                    [[ "$PYBIN" == "$VENV_DIR/bin/python" ]] && { venv_pip_install syncedlyrics || true; }
                     refresh_syncedlyrics_state
                     if [[ "$SYNCEDLYRICS_AVAILABLE" == "true" ]]; then
                         echo -e "  ${GREEN}✔ Multi-Web activo.${NC}"
@@ -1713,8 +1729,8 @@ menu_guide() {
     echo -e "  ${YELLOW}⚠${NC} La calidad real está limitada por la fuente."
     echo -e "  ${YELLOW}⚠${NC} FLAC desde una fuente con pérdida (YouTube) NO mejora la calidad."
     echo -e "  ${YELLOW}ℹ${NC} Las letras se obtienen de LRCLIB (gratis, sin key) y se validan."
-    echo -e "  ${YELLOW}ℹ${NC} Multi-Web requiere syncedlyrics (opcional)."
-    echo -e "  ${YELLOW}ℹ${NC} Workers > 1 solo se aplican a playlists/álbumes."
+    echo -e "  ${YELLOW}ℹ${NC} LRCLIB y Multi-Web se consultan en cascada según la configuración."
+    echo -e "  ${YELLOW}ℹ${NC} Workers > 1 paralelizan playlists, álbumes y postproceso de letras."
     echo ""
     read -rp "  Enter para volver..." _ || true
 }
@@ -2524,7 +2540,7 @@ menu_lyrics_manager() {
                 confirm "¿Sustituir letras ya existentes (se hace copia de seguridad)?" && ow=(--overwrite)
                 local f
                 for f in mp3 flac m4a; do
-                    py_core lyrics "$ASKED_PATH" "$f" "${LYRICS_ARGS[@]}" "${ow[@]}" || true
+                    py_core lyrics "$ASKED_PATH" "$f" "${LYRICS_ARGS[@]}" --jobs "$PARALLEL_JOBS" "${ow[@]}" || true
                 done
                 pause_enter
                 ;;

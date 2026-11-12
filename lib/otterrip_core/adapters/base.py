@@ -20,6 +20,7 @@ class SongQuery:
     track_number: Optional[int] = None
     language: str = ""
     video_id: str = ""
+    prefer_synced: bool = True
 
 
 class BaseProvider(ABC):

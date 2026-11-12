@@ -74,6 +74,10 @@ class TestBackendPackage(unittest.TestCase):
             home.mkdir()
             script = script_dir / "Down-Linux-music_v7.sh"
             shutil.copy2(ROOT / script.name, script)
+            script_text = script.read_text(encoding="utf-8")
+            version = re.search(r'^OTTERRIP_VERSION="([^"]+)"$', script_text, re.MULTILINE)
+            self.assertIsNotNone(version)
+            assert version is not None
 
             environment = os.environ.copy()
             environment.update(
@@ -84,7 +88,7 @@ class TestBackendPackage(unittest.TestCase):
                     "OTTERRIP_STATE_DIR": str(temp / "state"),
                     "OTTERRIP_CACHE_DIR": str(temp / "cache"),
                     "TEST_BACKEND_ARCHIVE": str(
-                        ROOT / "packages" / "otterrip-backend-v7.1.0.tar.gz"
+                        ROOT / "packages" / f"otterrip-backend-v{version.group(1)}.tar.gz"
                     ),
                 }
             )
@@ -102,7 +106,7 @@ BACKEND_SHA256="$expected_hash"
 download_backend_archive() { printf 'partial archive' > "$1"; return 18; }
 if ensure_backend; then exit 12; fi
 [[ ! -e "$APP_INSTALL_DIR" ]]
-[[ -z "$(find "$APP_ROOT" -mindepth 1 -maxdepth 1 -type d -name '.v7.1.0.*' -print -quit)" ]]
+[[ -z "$(find "$APP_ROOT" -mindepth 1 -maxdepth 1 -type d -name ".v${OTTERRIP_VERSION}.*" -print -quit)" ]]
 download_backend_archive() { cp "$TEST_BACKEND_ARCHIVE" "$1"; }
 ensure_backend
 [[ "$LIB_DIR" == "$APP_INSTALL_DIR/lib" ]]

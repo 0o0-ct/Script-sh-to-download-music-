@@ -34,7 +34,7 @@ readonly PROGRESS_POLL_INTERVAL=2       # Segundos entre sondeos del progreso pa
 # de forma silenciosa ni deja procesos huérfanos a medias.
 trap '' PIPE
 
-OTTERRIP_VERSION="7.2.0"
+OTTERRIP_VERSION="7.2.1"
 OTTERRIP_REPO="0o0-ct/Script-sh-to-download-music-"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
@@ -50,7 +50,7 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
 LIB_DIR="$SCRIPT_DIR/lib"
 REQUIREMENTS_FILE="$SCRIPT_DIR/requirements.txt"
-BACKEND_SHA256="b488fa97cbe8053c68fad9b1110a5e5aa5669e5d88497f3db80b63e6087036ef"
+BACKEND_SHA256="8bbffdaefdb2d1bd3677cb52dfe94dfae7bdc5eccd166530c997c48521cdf524"
 BACKEND_ARCHIVE_URL="https://raw.githubusercontent.com/0o0-ct/Script-sh-to-download-music-/v${OTTERRIP_VERSION}/packages/otterrip-backend-v${OTTERRIP_VERSION}.tar.gz"
 
 # ── Directorios XDG (los valores relativos se ignoran, según la especificación)
@@ -669,6 +669,11 @@ LYRICS_LANG=""
 LYRICS_PROVIDERS="lrclib,multiweb"
 LYRICS_PREFER_SYNCED=true
 LYRICS_UPGRADE_PLAIN=false
+LYRICS_SYNC_LEVEL="line"
+LYRICS_SIDECAR=true
+LYRICS_EMBED_STYLE="lrc"
+LYRICS_MIN_CONFIDENCE=0
+LYRICS_OFFSET_MS=0
 ENV_PARALLEL_SET=false
 [[ -n "${PARALLEL_JOBS:-}" ]] && ENV_PARALLEL_SET=true
 PARALLEL_JOBS="${PARALLEL_JOBS:-3}"
@@ -1052,6 +1057,11 @@ declare -gA CONFIG_SCHEMA=(
     [LYRICS_PROVIDERS]="providers:-:lrclib,multiweb"
     [LYRICS_PREFER_SYNCED]="bool:-:true"
     [LYRICS_UPGRADE_PLAIN]="bool:-:false"
+    [LYRICS_SYNC_LEVEL]="enum:line,word,auto:line"
+    [LYRICS_SIDECAR]="bool:-:true"
+    [LYRICS_EMBED_STYLE]="enum:lrc,plain:lrc"
+    [LYRICS_MIN_CONFIDENCE]="int:-:0"
+    [LYRICS_OFFSET_MS]="int:-:0"
     [LAST_DOWNLOAD_FOLDER]="folder:-:Music"
     [COVER_LOCAL]="path:-:"
     [COOKIES_BROWSER]="browser:-:"
@@ -1065,7 +1075,8 @@ declare -gA CONFIG_SCHEMA=(
 CONFIG_KEYS=(
     QUALITY_CHOICE DUR_MIN DUR_MAX PARALLEL_JOBS ALBUM_LAYOUT FETCH_LYRICS
     LYRICS_MODE LRCLIB_HOST LYRICS_LANG LYRICS_PROVIDERS LYRICS_PREFER_SYNCED
-    LYRICS_UPGRADE_PLAIN LAST_DOWNLOAD_FOLDER COVER_LOCAL COOKIES_BROWSER
+    LYRICS_UPGRADE_PLAIN LYRICS_SYNC_LEVEL LYRICS_SIDECAR LYRICS_EMBED_STYLE
+    LYRICS_MIN_CONFIDENCE LYRICS_OFFSET_MS LAST_DOWNLOAD_FOLDER COVER_LOCAL COOKIES_BROWSER
     COOKIES_FILE OTTERRIP_PROXY OTTERRIP_NOTIFY OTTERRIP_CHECK_UPDATES
 )
 
@@ -2296,6 +2307,19 @@ lyrics_common_args() {
     [[ -n "$LYRICS_LANG" ]] && LYRICS_ARGS+=(--lang "$LYRICS_LANG")
     [[ "$LYRICS_PREFER_SYNCED" == "false" ]] && LYRICS_ARGS+=(--plain-ok)
     [[ "$LYRICS_UPGRADE_PLAIN" == "true" ]] && LYRICS_ARGS+=(--upgrade-plain)
+    [[ "$LYRICS_SYNC_LEVEL" != "line" ]] && LYRICS_ARGS+=(--sync-level "$LYRICS_SYNC_LEVEL")
+    [[ "$LYRICS_SIDECAR" == "true" ]] && LYRICS_ARGS+=(--sidecar)
+    [[ -n "$LYRICS_EMBED_STYLE" ]] && LYRICS_ARGS+=(--embed-style "$LYRICS_EMBED_STYLE")
+    if (( LYRICS_MIN_CONFIDENCE > 0 )); then
+        # LYRICS_MIN_CONFIDENCE stores tenths-of-percent (600 = 60% = 0.6)
+        # Convert to float: 600 -> "0.6"
+        local conf_int=$(( LYRICS_MIN_CONFIDENCE / 10 ))
+        local conf_dec=$(( LYRICS_MIN_CONFIDENCE % 10 ))
+        LYRICS_ARGS+=(--min-confidence "${conf_int}.${conf_dec}")
+    fi
+    if (( LYRICS_OFFSET_MS != 0 )); then
+        LYRICS_ARGS+=(--offset-ms "$LYRICS_OFFSET_MS")
+    fi
     return 0
 }
 
@@ -2728,6 +2752,17 @@ menu_lyrics() {
         printf '  %sSincronizadas:%s %s   %sSustituir plana:%s %s\n' "$BOLD" "$NC" \
             "$([[ "$LYRICS_PREFER_SYNCED" == "true" ]] && echo prioritarias || echo 'sin prioridad')" \
             "$BOLD" "$NC" "$([[ "$LYRICS_UPGRADE_PLAIN" == "true" ]] && echo sí || echo no)"
+        local syncLabel=""
+        case "$LYRICS_SYNC_LEVEL" in
+            line) syncLabel="línea" ;;
+            word) syncLabel="palabra (exp.)" ;;
+            auto) syncLabel="auto" ;;
+        esac
+        printf '  %sNivel sync:%s    %s   %sSidecar .lrc:%s %s\n' \
+            "$BOLD" "$NC" "$syncLabel" "$BOLD" "$NC" \
+            "$([[ "$LYRICS_SIDECAR" == "true" ]] && echo sí || echo no)"
+        printf '  %sConfianza mín:%s %s   %sDesfase ms:%s  %s\n' \
+            "$BOLD" "$NC" "$(( LYRICS_MIN_CONFIDENCE / 10 ))%" "$BOLD" "$NC" "${LYRICS_OFFSET_MS}ms"
         echo ""
         echo -e "  ${CYAN}1)${NC} Activar / desactivar búsqueda de letras"
         echo -e "  ${CYAN}2)${NC} Modo: incrustar en el archivo de audio"
@@ -2740,6 +2775,10 @@ menu_lyrics() {
         echo -e "  ${CYAN}9)${NC} Proveedores (LRCLIB / Multi-Web / ambos)"
         echo -e "  ${CYAN}10)${NC} Priorizar letras sincronizadas (sí/no)"
         echo -e "  ${CYAN}11)${NC} Sustituir letra plana incrustada por una sincronizada (sí/no)"
+        echo -e "  ${CYAN}12)${NC} Nivel de sincronización (línea/palabra/auto)"
+        echo -e "  ${CYAN}13)${NC} Generar sidecar .lrc junto al audio (sí/no)"
+        echo -e "  ${CYAN}14)${NC} Confianza mínima (0-100 %, < esto = advertencia)"
+        echo -e "  ${CYAN}15)${NC} Desfase global en ms (+ retrasa, - adelanta)"
         echo -e "  ${CYAN}0)${NC} Volver"
         echo ""
         local l=""
@@ -2825,6 +2864,47 @@ menu_lyrics() {
                 ;;
             10) toggle_var LYRICS_PREFER_SYNCED; echo -e "  Priorizar sincronizadas: $LYRICS_PREFER_SYNCED"; sleep 0.8 ;;
             11) toggle_var LYRICS_UPGRADE_PLAIN; echo -e "  Sustituir plana por sincronizada: $LYRICS_UPGRADE_PLAIN"; sleep 0.8 ;;
+            12)
+                echo -e "  ${CYAN}1)${NC} Línea (por defecto)   ${CYAN}2)${NC} Palabra (experimental)   ${CYAN}3)${NC} Auto"
+                local sl=""
+                read -rp "  Opción: " sl || true
+                case "$sl" in
+                    1) LYRICS_SYNC_LEVEL="line" ;;
+                    2) LYRICS_SYNC_LEVEL="word"; echo -e "  ${YELLOW}⚠ Palabra a palabra: experimental. Requiere dependencias adicionales.${NC}" ;;
+                    3) LYRICS_SYNC_LEVEL="auto" ;;
+                    *) echo -e "  ${RED}Inválido.${NC}" ;;
+                esac
+                sleep 0.8
+                ;;
+            13) toggle_var LYRICS_SIDECAR; echo -e "  Sidecar .lrc: $LYRICS_SIDECAR"; sleep 0.8 ;;
+            14)
+                local cv=""
+                read -rp "  Confianza mínima (0-100, Enter=60): " cv || true
+                if [[ "$cv" =~ ^[0-9]+$ ]] && (( cv >= 0 && cv <= 100 )); then
+                    LYRICS_MIN_CONFIDENCE=$(( cv * 10 ))
+                    echo -e "  ${GREEN}Confianza mínima: ${cv}%${NC}"
+                elif [[ -z "$cv" ]]; then
+                    LYRICS_MIN_CONFIDENCE=600
+                    echo -e "  ${GREEN}Confianza mínima: 60%${NC}"
+                else
+                    echo -e "  ${RED}✘ Valor inválido (0-100).${NC}"
+                fi
+                sleep 0.8
+                ;;
+            15)
+                local ov=""
+                read -rp "  Desfase en ms (+ retrasa, - adelanta, Enter=0): " ov || true
+                if [[ "$ov" =~ ^[+-]?[0-9]+$ ]]; then
+                    LYRICS_OFFSET_MS="$ov"
+                    echo -e "  ${GREEN}Desfase: ${ov}ms${NC}"
+                elif [[ -z "$ov" ]]; then
+                    LYRICS_OFFSET_MS=0
+                    echo -e "  ${GREEN}Desfase: 0ms${NC}"
+                else
+                    echo -e "  ${RED}✘ Valor inválido.${NC}"
+                fi
+                sleep 0.8
+                ;;
             0|"") return 0 ;;
             *) echo -e "  ${RED}Opción inválida.${NC}"; sleep 1 ;;
         esac
@@ -3953,6 +4033,8 @@ menu_lyrics_manager() {
         echo -e "  ${CYAN}4)${NC} Ajustar desfase temporal (.lrc o incrustada)"
         echo -e "  ${CYAN}5)${NC} Convertir LRC → TXT"
         echo -e "  ${CYAN}6)${NC} Corrección manual: incrustar un .lrc/.txt propio"
+        echo -e "  ${CYAN}7)${NC} Verificar letras de la biblioteca (lyrics verify)"
+        echo -e "  ${CYAN}8)${NC} Reparar letras de la biblioteca (lyrics repair)"
         echo -e "  ${CYAN}0)${NC} Volver"
         echo ""
         local o="" t="" ms="" src=""
@@ -4024,6 +4106,26 @@ menu_lyrics_manager() {
                 ask_path "Archivo .lrc/.txt con la letra" "" || { sleep 1; continue; }
                 src="$ASKED_PATH"
                 py_core lyrics-tool set "$t" "$src" || true
+                pause_enter
+                ;;
+            7)
+                ask_path "Carpeta de biblioteca" "$(destination_display)" || { sleep 1; continue; }
+                echo -e "\n  ${YELLOW}⚙${NC} Verificando letras en: $ASKED_PATH\n"
+                py_core library "$ASKED_PATH" || true
+                pause_enter
+                ;;
+            8)
+                ask_path "Carpeta de biblioteca" "$(destination_display)" || { sleep 1; continue; }
+                local -a repair_extra=()
+                confirm "¿Quitar ruido de títulos también?" && repair_extra+=(--clean-noise)
+                echo -e "\n  ${YELLOW}Simulación (no se modifica nada)${NC}\n"
+                py_core repair "$ASKED_PATH" "${repair_extra[@]}" || true
+                echo ""
+                if confirm "¿Aplicar estos cambios?"; then
+                    py_core repair "$ASKED_PATH" --apply "${repair_extra[@]}" || true
+                else
+                    echo -e "  ${DIM}Sin cambios.${NC}"
+                fi
                 pause_enter
                 ;;
             0|"") return 0 ;;

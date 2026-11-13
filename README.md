@@ -30,9 +30,9 @@ como `ffmpeg`, pueden requerir el gestor de paquetes de Linux.
 
 ## Backend y versiones
 
-El archivo de distribución `packages/otterrip-backend-v7.2.0.tar.gz` contiene
+El archivo de distribución `packages/otterrip-backend-v7.2.1.tar.gz` contiene
 `lib/` y `requirements.txt`. El script solo acepta el SHA-256 incluido para esa
-versión y obtiene el paquete desde la etiqueta inmutable `v7.2.0`.
+versión y obtiene el paquete desde la etiqueta inmutable `v7.2.1`.
 
 La búsqueda de letras usa LRCLIB y, como respaldo, Musixmatch, NetEase,
 Megalobiz y Genius mediante `syncedlyrics`. Las fuentes Multi-Web buscan letras
@@ -82,6 +82,44 @@ otterrip --check-deps                     # verificación completa de dependenci
 Variables de entorno: `OTTERRIP_DOWNLOADS`, `PARALLEL_JOBS`, `OTTERRIP_PROXY`,
 `OTTERRIP_NOTIFY`, `OTTERRIP_CHECK_UPDATES`, `OTTERRIP_ASSUME_YES`,
 `OTTERRIP_YTDLP`, `OTTERRIP_COOKIES_BROWSER` y `OTTERRIP_COOKIES_FILE`.
+
+## Configuración de letras
+
+Las siguientes variables se guardan en `$XDG_CONFIG_HOME/otterrip/config` y se
+pueden ajustar desde el menú "Configuración de letras" (opciones 12–15):
+
+| Variable | Valores | Por defecto | Descripción |
+|---|---|---|---|
+| `LYRICS_SYNC_LEVEL` | `line`, `word`, `auto` | `line` | Nivel de sincronización |
+| `LYRICS_SIDECAR` | `true`, `false` | `true` | Generar `.lrc` junto al audio |
+| `LYRICS_EMBED_STYLE` | `lrc`, `plain` | `lrc` | Formato incrustado en tags |
+| `LYRICS_MIN_CONFIDENCE` | 0–1000 (0–100 %) | 0 | Umbral mínimo de confianza |
+| `LYRICS_OFFSET_MS` | entero (+/- ms) | 0 | Desfase global de timestamps |
+
+### Formatos generados
+
+- **`.lrc`**: archivo sidecar con timestamps por línea `[mm:ss.xx] texto`.
+  Siempre compatible con reproductores estándar.
+- **`.elrc`**: Enhanced LRC con tiempos por palabra
+  `<mm:ss.xx>palabra</mm:ss.xx>`. Solo se genera cuando
+  `LYRICS_SYNC_LEVEL=word` y `LYRICS_SIDECAR=true`.
+- **Tags**: USLT/SYLT (MP3), LYRICS/SYNCEDLYRICS (FLAC), ©lyr + átomo iTunes
+  (M4A). El incrustado usa siempre formato por línea; para palabra a palabra
+  en tags se requiere `LYRICS_EMBED_STYLE` explícito (por verificar).
+
+### Tabla de reproductores
+
+| Reproductor | `.lrc` sidecar | Tags MP3 | Tags FLAC | Tags M4A | `.elrc` |
+|---|---|---|---|---|---|
+| VLC | ✔ | ✔ | ✔ | ✔ | Por verificar |
+| MusicBee | ✔ | ✔ | ✔ | Por verificar | Por verificar |
+| Foobar2000 | ✔ | ✔ | ✔ | Por verificar | Por verificar |
+| Audacious | ✔ | Por verificar | Por verificar | N/A | Por verificar |
+| Apple Music | N/A | N/A | N/A | ✔ | Por verificar |
+| mpv | ✔ | ✔ | ✔ | ✔ | Por verificar |
+
+*Las marcas "Por verificar" indican compatibilidad teórica que no se ha
+comprobado empíricamente.*
 
 El historial de descargas se guarda en
 `$XDG_DATA_HOME/otterrip/history.tsv` (`timestamp`, `url`, `title`, `dest`,

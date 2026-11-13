@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Multi-Web provider adapter (uses syncedlyrics library)."""
+"""Multi-Web provider adapter (uses syncedlyrics library) — validated."""
 from __future__ import annotations
 
 import asyncio
 import importlib.util
+from typing import Optional
 
-from otterrip_core.models import LyricsResult, SyncLevel
+from otterrip_core.lyrics_bundle import LyricsBundle
+from otterrip_core.lrc_validator import validate_and_normalise_lrc, normalise_lrc
+from otterrip_core.query_clean import build_query_terms
 from otterrip_core.adapters.base import BaseProvider, SongQuery
 
 
@@ -23,19 +26,22 @@ class MultiwebProvider(BaseProvider):
     def is_available(self) -> bool:
         return importlib.util.find_spec("syncedlyrics") is not None
 
-    async def search(self, query: SongQuery) -> list[LyricsResult]:
+    async def search(self, query: SongQuery) -> list[LyricsBundle]:
         if not self.is_available():
             return []
         try:
-            from syncedlyrics import search
+            from syncedlyrics import search as _search
         except ImportError:
             return []
 
-        search_term = f"{query.title} {query.artist}".strip()
+        terms = build_query_terms(query.title, query.artist, query.album)
+        search_term = terms["search"] or f"{query.title} {query.artist}".strip()
+
+        bundles: list[LyricsBundle] = []
         for source in self.sources:
             try:
                 text = await asyncio.to_thread(
-                    search,
+                    _search,
                     search_term,
                     providers=[source],
                     synced_only=query.prefer_synced,
@@ -47,56 +53,48 @@ class MultiwebProvider(BaseProvider):
             if not isinstance(text, str) or not text.strip():
                 continue
 
-            entries = self._parse_lrc(text)
-            if entries and any(line.strip() for _, line in entries):
-                result = LyricsResult(
-                    provider=self.name,
-                    title=query.title,
-                    artist=query.artist,
-                    album=query.album,
-                    duration=query.duration,
-                    language=query.language,
-                    sync_level=SyncLevel.LINES,
-                    plain_text="\n".join(line for _, line in entries),
-                    timed_entries=entries,
-                    original_format="lrc",
-                    confidence=0.7,
-                )
-                return [result]
-            if query.prefer_synced or not text.strip():
-                continue
+            # Validate any LRC content found.
+            validation = validate_and_normalise_lrc(
+                text, audio_duration_s=query.duration
+            )
 
-            return [LyricsResult(
-                provider=self.name,
-                title=query.title,
-                artist=query.artist,
-                album=query.album,
-                duration=query.duration,
-                language=query.language,
-                plain_text=text.strip(),
-                original_format="txt",
-                confidence=0.7,
-            )]
+            if validation.valid and validation.entries:
+                bundles.append(LyricsBundle(
+                    kind="line",
+                    lrc=normalise_lrc(validation.entries),
+                    plain=validation.plain,
+                    lines=validation.entries,
+                    source=f"multiweb | {source} | {search_term}",
+                    audio_duration_ms=(
+                        int(round(query.duration * 1000))
+                        if query.duration is not None else None
+                    ),
+                    confidence=0.75,
+                    warnings=validation.warnings,
+                ))
+                # Return best (first valid synced) — don't keep searching.
+                break
 
-        return []
+            # If synced-only was requested and this source has no valid sync,
+            # try plain as fallback (only if plain_ok).
+            if not query.prefer_synced and text.strip():
+                bundles.append(LyricsBundle(
+                    kind="plain",
+                    plain=text.strip(),
+                    source=f"multiweb | {source} | {search_term}",
+                    audio_duration_ms=(
+                        int(round(query.duration * 1000))
+                        if query.duration is not None else None
+                    ),
+                    confidence=0.5,
+                ))
+                break
+
+        # Sort: synced > plain.
+        bundles.sort(key=lambda b: (0 if b.has_sync else 1, -b.confidence))
+        return bundles
 
     @classmethod
-    def max_sync_level(cls) -> SyncLevel:
+    def max_sync_level(cls):
+        from otterrip_core.models import SyncLevel
         return SyncLevel.LINES
-
-    @staticmethod
-    def _parse_lrc(text: str) -> list[tuple[float, str]]:
-        """Parse LRC format."""
-        import re
-        entries = []
-        pat = re.compile(r"\[(\d{2}):(\d{2})(?:\.(\d{2,3}))?\]\s*(.*)")
-        for line in text.splitlines():
-            m = pat.match(line.strip())
-            if m:
-                mins, secs = int(m.group(1)), int(m.group(2))
-                ms = m.group(3) or "0"
-                if len(ms) == 2:
-                    ms += "0"
-                time_s = mins * 60 + secs + int(ms) / 1000.0
-                entries.append((time_s, m.group(4)))
-        return entries

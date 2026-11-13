@@ -10,16 +10,46 @@ recuperación de sesiones y herramientas de biblioteca.
 
 ## Inicio
 
-Descarga `Down-Linux-music_v7.sh` y ejecútalo con Bash 4.4 o superior:
+### ⚠️ Importante: Cómo descargar el programa (paso a paso)
+
+**Si es la primera vez que usas OtterRip**, clona el repositorio completo para
+tener todos los archivos necesarios (script, backend, tests, configuración):
 
 ```bash
-bash Down-Linux-music_v7.sh
+git clone https://github.com/0o0-ct/Script-sh-to-download-music-.git
+cd Script-sh-to-download-music-
+chmod +x Down-Linux-music_v7.sh
+```
+
+**Si ya tienes una copia anterior**, actualiza siempre antes de ejecutar:
+
+```bash
+cd Script-sh-to-download-music-
+git pull origin main
+```
+
+> [!WARNING]
+> **No descargues solo el archivo `Down-Linux-music_v7.sh`** desde GitHub
+> (por ejemplo, con `wget` o descargando el archivo individual). El script
+> necesita el directorio `lib/` junto a él para funcionar correctamente.
+> Si descargas solo el `.sh`, el backend se obtendrá desde Internet, pero
+> cualquier modificación local o trabajo offline no funcionará.
+>
+> Si en tu otra PC ves una versión antigua (ej. "v7.2" en el banner),
+> significa que necesitas ejecutar `git pull origin main` para actualizar.
+
+### Ejecución
+
+Una vez que tienes el repositorio, ejecuta con Bash 4.4 o superior:
+
+```bash
+./Down-Linux-music_v7.sh
 ```
 
 Cuando el script no encuentre un backend compatible junto a sí mismo, descargará
 el paquete de su versión desde la etiqueta correspondiente de este repositorio.
 Verificará el SHA-256 antes de extraerlo y lo instalará en
-`$XDG_DATA_HOME/otterrip/app/v7.2.0` (o `~/.local/share/otterrip/app/v7.2.0`).
+`$XDG_DATA_HOME/otterrip/app/v7.3.0` (o `~/.local/share/otterrip/app/v7.3.0`).
 El backend y el entorno virtual son por usuario; no se modifican la biblioteca
 musical, la configuración, las sesiones ni los demás datos personales. Si ya hay
 un backend compatible instalado, el inicio no necesita conexión a Internet.
@@ -30,9 +60,9 @@ como `ffmpeg`, pueden requerir el gestor de paquetes de Linux.
 
 ## Backend y versiones
 
-El archivo de distribución `packages/otterrip-backend-v7.2.1.tar.gz` contiene
+El archivo de distribución `packages/otterrip-backend-v7.3.0.tar.gz` contiene
 `lib/` y `requirements.txt`. El script solo acepta el SHA-256 incluido para esa
-versión y obtiene el paquete desde la etiqueta inmutable `v7.2.1`.
+versión y obtiene el paquete desde la etiqueta inmutable `v7.3.0`.
 
 La búsqueda de letras usa LRCLIB y, como respaldo, Musixmatch, NetEase,
 Megalobiz y Genius mediante `syncedlyrics`. Las fuentes Multi-Web buscan letras
@@ -86,7 +116,8 @@ Variables de entorno: `OTTERRIP_DOWNLOADS`, `PARALLEL_JOBS`, `OTTERRIP_PROXY`,
 ## Configuración de letras
 
 Las siguientes variables se guardan en `$XDG_CONFIG_HOME/otterrip/config` y se
-pueden ajustar desde el menú "Configuración de letras" (opciones 12–15):
+pueden ajustar desde el menú "Configurar LETRAS" (opción 7) o el
+"Gestor avanzado de letras" (opción 13):
 
 | Variable | Valores | Por defecto | Descripción |
 |---|---|---|---|
@@ -103,14 +134,24 @@ pueden ajustar desde el menú "Configuración de letras" (opciones 12–15):
 - **`.elrc`**: Enhanced LRC con tiempos por palabra
   `<mm:ss.xx>palabra</mm:ss.xx>`. Solo se genera cuando
   `LYRICS_SYNC_LEVEL=word` y `LYRICS_SIDECAR=true`.
-- **Tags**: USLT/SYLT (MP3), LYRICS/SYNCEDLYRICS (FLAC), ©lyr + átomo iTunes
-  (M4A). El incrustado usa siempre formato por línea; para palabra a palabra
+- **Tags MP3**: `TXXX:LYRICS` (LRC sincronizado para PowerAmp), `SYLT`
+  (timestamps binarios), `USLT` (texto plano).
+- **Tags FLAC**: `SYNCEDLYRICS` (LRC sincronizado), `LYRICS` (texto plano).
+- **Tags M4A**: `----:com.apple.iTunes:LYRICS` + `©lyr`.
+- El incrustado usa siempre formato por línea; para palabra a palabra
   en tags se requiere `LYRICS_EMBED_STYLE` explícito (por verificar).
 
 ### Tabla de reproductores
 
-| Reproductor | `.lrc` sidecar | Tags MP3 | Tags FLAC | Tags M4A | `.elrc` |
+| Reproductor | `.lrc` sidecar | Tags MP3 (sinc.) | Tags FLAC | Tags M4A | `.elrc` |
 |---|---|---|---|---|---|
+| **PowerAmp** | ✔ | ✔ (TXXX:LYRICS) | — | — | — |
+| **Musicolet** | ✔ | ✔ (USLT LRC) | — | — | — |
+| **Samsung Music** | ✔ | ❌ (plana) | — | — | — |
+| **BlackPlayer** | ✔ | ✔ (USLT LRC) | — | — | — |
+| **Retro Music** | ✔ | ✔ (USLT LRC) | — | — | — |
+| **Oto Music** | ✔ | ❓ | — | — | — |
+| **FiiO Music** | ✔ | ❓ | — | — | — |
 | VLC | ✔ | ✔ | ✔ | ✔ | Por verificar |
 | MusicBee | ✔ | ✔ | ✔ | Por verificar | Por verificar |
 | Foobar2000 | ✔ | ✔ | ✔ | Por verificar | Por verificar |
@@ -118,8 +159,19 @@ pueden ajustar desde el menú "Configuración de letras" (opciones 12–15):
 | Apple Music | N/A | N/A | N/A | ✔ | Por verificar |
 | mpv | ✔ | ✔ | ✔ | ✔ | Por verificar |
 
-*Las marcas "Por verificar" indican compatibilidad teórica que no se ha
-comprobado empíricamente.*
+> [!TIP]
+> **El sidecar `.lrc` es el formato más universal.** Todos los reproductores
+> listados leen archivos `.lrc` externos. OtterRip genera sidecars por defecto
+> (`LYRICS_SIDECAR=true`), así que las letras sincronizadas deberían funcionar
+> en la mayoría de reproductores sin configuración adicional.
+>
+> Para **PowerAmp**, las letras sincronizadas embebidas usan el tag `TXXX:LYRICS`
+> con formato LRC `[mm:ss.xx]`. Verifica en PowerAmp:
+> `Ajustes` → `Apariencia` → `Letras` → `Escanear archivos LRC` → **Habilitado**.
+
+*Las marcas "❓" indican compatibilidad teórica que no se ha
+comprobado empíricamente. Las marcas "❌" indican que el reproductor no
+interpreta ese formato como letra sincronizada.*
 
 El historial de descargas se guarda en
 `$XDG_DATA_HOME/otterrip/history.tsv` (`timestamp`, `url`, `title`, `dest`,
@@ -128,11 +180,14 @@ El historial de descargas se guarda en
 ## Pruebas
 
 ```bash
-PYTHONPATH=lib python3 -m unittest discover -s tests -v
+python3 -m pytest tests/ -q
 bats tests/test_otterrip.bats
 bash -n Down-Linux-music_v7.sh
 shellcheck -x -s bash Down-Linux-music_v7.sh
 ```
+
+Con `pyproject.toml` incluido, no es necesario configurar `PYTHONPATH`
+manualmente para ejecutar `pytest`.
 
 ## Seguridad
 
@@ -147,4 +202,4 @@ shellcheck -x -s bash Down-Linux-music_v7.sh
 - Los temporales se crean con `mktemp` en directorios privados y se verifican
   para descartar ataques por symlink.
 
-Los cambios detallados están en [CHANGELOG_v7.3.md](CHANGELOG_v7.3.md).
+Los cambios detallados están en [CHANGELOG.md](CHANGELOG.md).

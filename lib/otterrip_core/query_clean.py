@@ -47,10 +47,19 @@ _TITLE_NOISE = (
     r"\(en\s+vivo\s+desde\s+.*?\)",
     # (Versión ...)
     r"\(versi[óo]n\s+.*?\)",
+    # (Audio Oficial) / (Official Audio)
+    r"\(audio\s+oficial\)",
+    r"\(official\s+audio\)",
     r"official\s*(?:video|audio|lyric)",
     r"lyrics?\s*video",
     r"\bhd\b",
     r"\b4k\b",
+)
+
+# Trailing genre/channel suffixes — applied separately so $ anchor works.
+_TRAILING_SUFFIX_RE = re.compile(
+    r"\s*-\s*(?:musica\s+catolica|catholic\s+music|music\s+catolica)\s*$",
+    re.IGNORECASE,
 )
 
 _TITLE_NOISE_RE = re.compile("|".join(_TITLE_NOISE), re.IGNORECASE)
@@ -77,6 +86,31 @@ def normalize_unicode(value: str) -> str:
     return stripped.casefold().strip()
 
 
+def _strip_repeated_artist_prefix(title: str) -> tuple[str, str | None]:
+    """Remove repeated artist prefix from YouTube Music titles.
+
+    YouTube Music sometimes embeds the artist name twice at the start of the
+    title, e.g. "JON CARLO - Jon Carlo - Quema Mi Vida".  This function detects
+    that pattern (first two dash-separated segments match case-insensitively)
+    and strips the duplicate prefix so only the actual track name remains.
+
+    Returns ``(cleaned_title, extracted_artist)``.  The extracted artist is
+    useful when the metadata artist field is empty.
+
+    Examples:
+        "JON CARLO - Jon Carlo - Quema Mi Vida" → ("Quema Mi Vida", "Jon Carlo")
+        "ARTISTA - Artista - Canción" → ("Canción", "Artista")
+        "Riptide" → ("Riptide", None)
+    """
+    parts = title.split(" - ", 2)
+    if len(parts) >= 3:
+        part1 = parts[0].strip()
+        part2 = parts[1].strip()
+        if part1 and part2 and part1.lower() == part2.lower():
+            return parts[2].strip(), part2
+    return title, None
+
+
 def clean_title(title: str) -> str:
     """Remove YouTube noise from a track title.
 
@@ -84,10 +118,16 @@ def clean_title(title: str) -> str:
         "Bohemian Rhapsody (Official Video)" → "Bohemian Rhapsody"
         "Shape of You [Lyrics]" → "Shape of You"
         "Blinding Lights (feat. Kendrick Lamar)" → "Blinding Lights"
+        "JON CARLO - Jon Carlo - Quema Mi Vida" → "Quema Mi Vida"
+        "Mi Gran Pasión (Audio Oficial) - Musica Catolica" → "Mi Gran Pasión"
     """
     if not title:
         return title
-    cleaned = _TITLE_NOISE_RE.sub("", title)
+    # Strip repeated artist prefix first (before other noise removal)
+    cleaned, _ = _strip_repeated_artist_prefix(title)
+    cleaned = _TITLE_NOISE_RE.sub("", cleaned)
+    # Remove trailing genre/channel suffixes like "- Musica Catolica"
+    cleaned = _TRAILING_SUFFIX_RE.sub("", cleaned)
     cleaned = cleaned.replace("–", "-").replace("—", "-")
     # Normalise dash separators but keep meaningful ones inside title
     cleaned = _WS_RE.sub(" ", cleaned).strip(" -–—|")
@@ -142,9 +182,20 @@ def build_query_terms(
 
     Returns a dict with keys ``title``, ``artist``, ``album`` and
     ``search`` (combined title + artist for fallback providers).
+
+    When the title contains a repeated artist prefix (e.g. "JON CARLO - Jon Carlo -
+    Quema Mi Vida") and the artist field is empty, the artist name is extracted
+    from the title automatically.
     """
-    clean_t = clean_title(title)
-    clean_a = clean_artist(artist)
+    # Strip repeated artist prefix and extract artist if available
+    stripped_title, extracted_artist = _strip_repeated_artist_prefix(title)
+    clean_t = clean_title(stripped_title)
+
+    # Use extracted artist from title if the provided artist is empty
+    if not artist and extracted_artist:
+        clean_a = clean_artist(extracted_artist)
+    else:
+        clean_a = clean_artist(artist)
 
     # Move feat. artists from title into artist field for better matching
     if feat_artist:

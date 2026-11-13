@@ -1,5 +1,19 @@
 # Changelog
 
+## [7.3.4] - 2026-11-13
+
+### Fixed
+
+- **YouTube Music repeated artist prefix broke lyrics search.** Titles like
+  "JON CARLO - Jon Carlo - Quema Mi Vida" were not cleaned, so LRCLIB could
+  never match the track. `clean_title()` now strips the repeated artist
+  prefix, and `build_query_terms()` extracts the artist name automatically
+  when the metadata artist field is empty. This dramatically improves match
+  rates for YouTube Music playlists where the title embeds the artist twice.
+- **Trailing noise "(Audio Oficial)" and "- Musica Catolica" prevented matches.**
+  Added regex patterns for `(Audio Oficial)`, `(Official Audio)`, and trailing
+  genre suffixes like `- Musica Catolica` / `- Catholic Music`.
+
 ## [7.3.3] - 2026-11-13
 
 ### Fixed

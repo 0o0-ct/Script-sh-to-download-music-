@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════
-#  OtterRip v7.2 — Descargador de audio + letras
+#  OtterRip v7.3 — Descargador de audio + letras
 #  Basado en OtterRip v7.0 (misma filosofía y licencia)
 #
 #  Novedades v7.2 (ver README.md y CHANGELOG.md):
@@ -2421,7 +2421,7 @@ menu() {
 
         echo -e "${BOLD}${CYAN}"
         echo "  ╔══════════════════════════════════════════════════╗"
-        echo "  ║                 🦦 OTTER RIP v7.2                ║"
+        echo "  ║                 🦦 OTTER RIP v${OTTERRIP_VERSION}              ║"
         echo "  ╚══════════════════════════════════════════════════╝${NC}"
         printf '  %sPerfil:%s      %s\n' "$BOLD" "$NC" "$PROFILE"
         printf '  %sDuración:%s    >%ss y ≤ %s\n' "$BOLD" "$NC" "$DUR_MIN" "$(format_seconds "$DUR_MAX")"

@@ -10,9 +10,14 @@ doctor.py
 fix_metadata.py
 library.py
 lyrics.py
+lyrics_bundle.py
 lyrics_tool.py
+lrc_cache.py
+lrc_validator.py
 merge_sessions.py
 models.py
+offset.py
+query_clean.py
 queue.py
 repair.py
 verify_session.py

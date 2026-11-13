@@ -210,7 +210,8 @@ def _embed_lyrics(audio, result: LyricsResult, mode: str = "embed") -> bool:
 
         audio.save()
         return True
-    except Exception:
+    except Exception as exc:
+        logger.error("error al incrustar letras en %s: %s", getattr(audio, 'filename', '?'), exc)
         return False
 
 

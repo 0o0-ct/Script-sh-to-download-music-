@@ -1,5 +1,16 @@
 # Changelog
 
+## [7.3.1] - 2026-11-13
+
+### Fixed
+
+- **Critical: lyrics embedding failed silently on all formats.** `to_legacy_result()`
+  in `lyrics_bundle.py` was missing the `has_sync` field, causing an
+  `AttributeError` when `_embed_lyrics()` tried to check `result.has_sync`.
+  The exception was silently swallowed, so every embed returned "error al
+  incrustar" even though the lyrics were found. Added `has_sync` to the
+  legacy dict and added error logging in `_embed_lyrics()` for future debugging.
+
 ## [7.3.0] - 2026-11-13
 
 ### Added

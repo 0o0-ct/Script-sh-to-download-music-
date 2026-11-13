@@ -34,7 +34,7 @@ readonly PROGRESS_POLL_INTERVAL=2       # Segundos entre sondeos del progreso pa
 # de forma silenciosa ni deja procesos huérfanos a medias.
 trap '' PIPE
 
-OTTERRIP_VERSION="7.3.0"
+OTTERRIP_VERSION="7.3.1"
 OTTERRIP_REPO="0o0-ct/Script-sh-to-download-music-"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
@@ -50,7 +50,7 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
 LIB_DIR="$SCRIPT_DIR/lib"
 REQUIREMENTS_FILE="$SCRIPT_DIR/requirements.txt"
-BACKEND_SHA256="b4d60b8d0cb48e3ccd963048ab1184aded7ca49c5378fa185781348537f25169"
+BACKEND_SHA256="b8a5d9bab2a5e64be0332fed780c32306971a94c160f5bb9cdbe60ecb36fd008"
 BACKEND_ARCHIVE_URL="https://raw.githubusercontent.com/0o0-ct/Script-sh-to-download-music-/v${OTTERRIP_VERSION}/packages/otterrip-backend-v${OTTERRIP_VERSION}.tar.gz"
 
 # ── Directorios XDG (los valores relativos se ignoran, según la especificación)

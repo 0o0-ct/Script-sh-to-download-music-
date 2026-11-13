@@ -151,6 +151,7 @@ class LyricsBundle:
             "sync_level": (
                 2 if self.kind == "word" else 1 if self.kind == "line" else 0
             ),
+            "has_sync": self.has_sync,
             "plain_text": self.plain or "",
             "timed_entries": [
                 (ms / 1000.0, txt) for ms, txt in self.lines

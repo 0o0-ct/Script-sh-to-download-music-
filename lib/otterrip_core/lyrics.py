@@ -99,11 +99,14 @@ def _has_lyrics(audio) -> bool:
         return False
     try:
         if isinstance(audio, MP3) and audio.tags:
-            return bool(audio.tags.get("USLT:"))
+            return bool(audio.tags.get("USLT:") or audio.tags.get("SYLT:"))
         elif isinstance(audio, FLAC) and audio.tags:
-            return bool(audio.get("LYRICS"))
+            return bool(audio.get("LYRICS") or audio.get("SYNCEDLYRICS"))
         elif isinstance(audio, MP4) and audio.tags:
-            return bool(audio.tags.get("\xa9lyr"))
+            return bool(
+                audio.tags.get("\xa9lyr")
+                or audio.tags.get(ITUNES_SYNCED_ATOM)
+            )
     except Exception:
         pass
     return False
@@ -122,6 +125,11 @@ def _format_lrc(entries: list[tuple[float, str]]) -> str:
 
 
 # ─── Embedding ────────────────────────────────────────────────────
+
+# Átomo libre de iTunes donde se guarda la letra sincronizada en MP4/M4A.
+# Es la convención que usan Apple Music, iTunes y Picard.
+ITUNES_SYNCED_ATOM = "----:com.apple.iTunes:LYRICS"
+
 
 def _embed_lyrics(audio, result: LyricsResult, mode: str = "embed") -> bool:
     """Embed lyrics into an audio file. Returns True on success."""
@@ -160,11 +168,25 @@ def _embed_lyrics(audio, result: LyricsResult, mode: str = "embed") -> bool:
             plain = result.plain_text or "\n".join(t for _, t in result.timed_entries)
             if plain:
                 audio["LYRICS"] = plain.split("\n")
+            # La letra sincronizada se guarda aparte (SYNCEDLYRICS) con las
+            # marcas de tiempo: sin esto el FLAC solo conservaría el texto.
+            if result.has_sync and result.timed_entries:
+                audio["SYNCEDLYRICS"] = [_format_lrc(result.timed_entries)]
 
         elif isinstance(audio, MP4):
             plain = result.plain_text or "\n".join(t for _, t in result.timed_entries)
             if plain:
                 audio.tags["\xa9lyr"] = [plain]
+            # La letra sincronizada va en el átomo libre de iTunes: sin esto
+            # el M4A solo conservaría el texto plano.
+            if result.has_sync and result.timed_entries:
+                try:
+                    audio.tags.pop(ITUNES_SYNCED_ATOM, None)
+                except Exception:
+                    pass
+                audio.tags[ITUNES_SYNCED_ATOM] = [
+                    _format_lrc(result.timed_entries).encode("utf-8")
+                ]
 
         audio.save()
         return True

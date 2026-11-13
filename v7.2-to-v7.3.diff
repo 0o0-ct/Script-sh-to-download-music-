@@ -1,7 +1,7 @@
 diff --git a/Down-Linux-music_v7.sh b/Down-Linux-music_v7.sh
 old mode 100644
 new mode 100755
-index 350714c..01fcf7e
+index 350714c..8f1591b
 --- a/Down-Linux-music_v7.sh
 +++ b/Down-Linux-music_v7.sh
 @@ -14,7 +14,28 @@
@@ -1268,7 +1268,67 @@ index 350714c..01fcf7e
      return 0
  }
  
-@@ -1502,6 +2284,9 @@ menu() {
+@@ -1430,6 +2212,24 @@ lyrics_common_args() {
+     return 0
+ }
+ 
++# Combina dos resúmenes de letras (found/notfound/already) en el principal.
++# El segundo resumen corresponde al reintento en modo plano: las pistas que ya
++# tenían letra pasan a "already" y las nuevas se suman a "found".
++merge_lyrics_summary() {
++    local main="${1-}" extra="${2-}"
++    [[ -n "$main" && -f "$main" ]] || return 0
++    [[ -n "$extra" && -f "$extra" ]] || return 0
++    local f1 a1 f2 n2 a2
++    f1="$(summary_value "$main" found 0)"
++    a1="$(summary_value "$main" already 0)"
++    f2="$(summary_value "$extra" found 0)"
++    n2="$(summary_value "$extra" notfound 0)"
++    a2="$(summary_value "$extra" already 0)"
++    printf 'found=%s\nnotfound=%s\nalready=%s\n' \
++        "$(( f1 + f2 ))" "$n2" "$(( a1 + a2 ))" > "$main" 2>/dev/null || true
++    return 0
++}
++
+ process_lyrics() {
+     local dir="${1-}" fmt="${2-}" session_file="${3-}" summary_file="${4-}"
+     local rc=0
+@@ -1444,6 +2244,34 @@ process_lyrics() {
+     [[ -n "$session_file" ]] && args+=(--session "$session_file")
+     [[ -n "$summary_file" ]] && args+=(--summary "$summary_file")
+     py_core "${args[@]}" || rc=$?
++
++    # Segundo intento: si quedan pistas sin letra se reintenta aceptando
++    # también letras planas. Por defecto solo se aceptan letras sincronizadas
++    # (con marcas de tiempo), así que una canción que solo tenga letra plana
++    # se descartaría en el primer intento aunque exista en alguna fuente.
++    if [[ -n "$summary_file" && "$LYRICS_PREFER_SYNCED" == "true" ]]; then
++        local pending=0
++        pending="$(summary_value "$summary_file" notfound 0)"
++        if [[ "$pending" =~ ^[0-9]+$ ]] && (( pending > 0 )); then
++            # Sin --upgrade-plain: el reintento no debe reemplazar letras ya
++            # incrustadas (las que ya tienen letra se saltan como "already").
++            local -a plain_args=()
++            local i=0
++            for ((i = 0; i < ${#LYRICS_ARGS[@]}; i++)); do
++                [[ "${LYRICS_ARGS[$i]}" == "--upgrade-plain" ]] && continue
++                plain_args+=("${LYRICS_ARGS[$i]}")
++            done
++            local retry_summary="${summary_file}.plain"
++            local -a retry=(lyrics "$dir" "$fmt" "${plain_args[@]}" --jobs "$PARALLEL_JOBS" --plain-ok)
++            [[ -n "$session_file" ]] && retry+=(--session "$session_file")
++            retry+=(--summary "$retry_summary")
++            echo -e "  ${DIM}· Segundo intento (letra plana) en ${pending} pista(s) sin letras...${NC}"
++            py_core "${retry[@]}" >/dev/null 2>&1 || true
++            merge_lyrics_summary "$summary_file" "$retry_summary"
++            rm -f -- "$retry_summary" 2>/dev/null || true
++        fi
++    fi
++
+     case "$rc" in
+         0) return 0 ;;
+         14) echo "  ${YELLOW}⚠${NC} El servicio de letras no estaba disponible (se puede reintentar más tarde)." ;;
+@@ -1502,6 +2330,9 @@ menu() {
              printf '  %sCookies:%s     Navegador (%s)\n' "$BOLD" "$NC" "$COOKIES_BROWSER"
          fi
          printf '  %sDestino:%s     %s\n' "$BOLD" "$NC" "$dest"
@@ -1278,7 +1338,7 @@ index 350714c..01fcf7e
          echo ""
          echo -e "  ${CYAN} 1)${NC} Descargar audio"
          echo -e "  ${CYAN} 2)${NC} Configurar calidad"
-@@ -1519,6 +2304,8 @@ menu() {
+@@ -1519,6 +2350,8 @@ menu() {
          echo -e "  ${CYAN}14)${NC} Conversor de audio (archivos locales)"
          echo -e "  ${CYAN}15)${NC} Diagnóstico y mantenimiento"
          echo -e "  ${CYAN}16)${NC} Configurar cookies (YouTube / anti-bot)"
@@ -1287,7 +1347,7 @@ index 350714c..01fcf7e
          echo -e "  ${CYAN} 0)${NC} Salir"
          echo ""
          read -rp "  Opción: " op || exit 0
-@@ -1544,6 +2331,8 @@ menu() {
+@@ -1544,6 +2377,8 @@ menu() {
              14) menu_convert ;;
              15) menu_diagnostics ;;
              16) menu_cookies ;;
@@ -1296,7 +1356,7 @@ index 350714c..01fcf7e
              0) save_config; echo -e "\n  ${GREEN}¡Hasta luego!${NC}\n"; exit 0 ;;
              *) echo -e "  ${RED}Opción inválida.${NC}"; sleep 1 ;;
          esac
-@@ -1551,6 +2340,31 @@ menu() {
+@@ -1551,6 +2386,31 @@ menu() {
      done
  }
  
@@ -1328,7 +1388,7 @@ index 350714c..01fcf7e
  menu_quality() {
      clear_screen
      echo -e "${BOLD}${CYAN}══ Calidad de audio ══${NC}\n"
-@@ -1613,7 +2427,7 @@ menu_workers() {
+@@ -1613,7 +2473,7 @@ menu_workers() {
      while [[ ${#w} -gt 1 && "${w:0:1}" == "0" ]]; do
          w="${w:1}"
      done
@@ -1337,7 +1397,7 @@ index 350714c..01fcf7e
          echo -e "  ${RED}✘ Valor inválido. Debe estar entre 1 y 32.${NC}"; sleep 1.5; return 0
      fi
      PARALLEL_JOBS=$((10#$w))
-@@ -1672,7 +2486,7 @@ menu_cover() {
+@@ -1672,7 +2532,7 @@ menu_cover() {
          sleep 1.2
          return 0
      fi
@@ -1346,7 +1406,7 @@ index 350714c..01fcf7e
      ext="${path,,}"
      ext="${ext##*.}"
      if [[ "$ext" != "jpg" && "$ext" != "jpeg" && "$ext" != "png" ]]; then
-@@ -1723,7 +2537,7 @@ menu_cookies() {
+@@ -1723,7 +2583,7 @@ menu_cookies() {
                  raw="$(trim_input "$(strip_wrapping_quotes "$raw")")"
                  raw="$(expand_tilde "$raw")"
                  if [[ -n "$raw" && -f "$raw" && -r "$raw" ]]; then
@@ -1355,7 +1415,7 @@ index 350714c..01fcf7e
                      COOKIES_FILE="$path"
                      COOKIES_BROWSER=""
                      msg_ok "Archivo de cookies: $COOKIES_FILE"
-@@ -1907,7 +2721,19 @@ menu_guide() {
+@@ -1907,7 +2767,19 @@ menu_guide() {
  draw_download_progress() {
      local done="${1:-0}" total="${2:-0}" ok="${3:-0}" err="${4:-0}" skip="${5:-0}" jobs="${6:-1}"
      local width=26 filled=0 i bar=""
@@ -1376,7 +1436,7 @@ index 350714c..01fcf7e
      (( filled > width )) && filled=$width
      (( filled < 0 )) && filled=0
      for ((i = 0; i < width; i++)); do
-@@ -1918,6 +2744,7 @@ draw_download_progress() {
+@@ -1918,6 +2790,7 @@ draw_download_progress() {
          "$bar" "$done" "$total" "$ok" "$err" "$skip" "$jobs"
  }
  
@@ -1384,7 +1444,7 @@ index 350714c..01fcf7e
  _parallel_worker() {
      local start="${1-}" end="${2-}" url="${3-}" outtpl="${4-}" plflag="${5-}"
      local session="${6-}" log="${7-}"
-@@ -1930,11 +2757,20 @@ _parallel_worker() {
+@@ -1930,11 +2803,20 @@ _parallel_worker() {
          --no-progress
          --print-to-file "$SESSION_PRINT_TEMPLATE" "$session"
          -o "$outtpl"
@@ -1405,7 +1465,7 @@ index 350714c..01fcf7e
  run_sequential_download() {
      local url="${1-}" outtpl="${2-}" plflag="${3-}" session="${4-}" log="${5-}"
      local rc=0
-@@ -1946,12 +2782,14 @@ run_sequential_download() {
+@@ -1946,12 +2828,14 @@ run_sequential_download() {
          --progress
          --newline
          -o "$outtpl"
@@ -1422,7 +1482,7 @@ index 350714c..01fcf7e
      local pid=$!
      CHILD_PIDS+=("$pid")
      wait "$pid" || rc=$?
-@@ -1960,6 +2798,14 @@ run_sequential_download() {
+@@ -1960,6 +2844,14 @@ run_sequential_download() {
  }
  
  # Variante para la cola: segundo plano + sondeo del marcador de cancelación.
@@ -1437,7 +1497,7 @@ index 350714c..01fcf7e
  run_sequential_polled() {
      local url="${1-}" outtpl="${2-}" plflag="${3-}" session="${4-}" log="${5-}"
      local rc=0 pid=""
-@@ -1970,6 +2816,7 @@ run_sequential_polled() {
+@@ -1970,6 +2862,7 @@ run_sequential_polled() {
          --print-to-file "$SESSION_PRINT_TEMPLATE" "$session"
          --no-progress
          -o "$outtpl"
@@ -1445,7 +1505,7 @@ index 350714c..01fcf7e
          "$url"
      )
      "${cmd[@]}" >"$log" 2>&1 &
-@@ -1988,6 +2835,14 @@ run_sequential_polled() {
+@@ -1988,6 +2881,14 @@ run_sequential_polled() {
      return "$rc"
  }
  
@@ -1460,7 +1520,7 @@ index 350714c..01fcf7e
  run_parallel_download() {
      local url="${1-}" outtpl="${2-}" plflag="${3-}" workdir="${4-}" total="${5:-0}"
      local jobs="$PARALLEL_JOBS"
-@@ -2029,15 +2884,14 @@ run_parallel_download() {
+@@ -2029,15 +2930,14 @@ run_parallel_download() {
              ok=$((ok + $(count_lines "$sf")))
          done
          # Optimización: evitar recount (grep/sort -u) sobre todos los logs en
@@ -1481,7 +1541,7 @@ index 350714c..01fcf7e
          fi
          finished=$((ok + errors + skipped))
          (( finished > total )) && finished=$total
-@@ -2055,7 +2909,7 @@ run_parallel_download() {
+@@ -2055,7 +2955,7 @@ run_parallel_download() {
              fi
          done
          (( alive == 0 )) && break
@@ -1490,7 +1550,7 @@ index 350714c..01fcf7e
      done
      [[ -t 1 ]] && printf '\n'
  
-@@ -2086,6 +2940,10 @@ run_parallel_download() {
+@@ -2086,6 +2986,10 @@ run_parallel_download() {
      return 0
  }
  
@@ -1501,7 +1561,7 @@ index 350714c..01fcf7e
  build_common_flags() {
      local archive="${1-}"
      COMMON_FLAGS=(
-@@ -2134,6 +2992,10 @@ build_common_flags() {
+@@ -2134,6 +3038,10 @@ build_common_flags() {
      elif [[ -n "$COOKIES_BROWSER" ]]; then
          COMMON_FLAGS+=( --cookies-from-browser "$COOKIES_BROWSER" )
      fi
@@ -1512,7 +1572,7 @@ index 350714c..01fcf7e
  }
  
  # Resultados del último trabajo de descarga.
-@@ -2161,10 +3023,10 @@ check_disk_space() {
+@@ -2161,10 +3069,10 @@ check_disk_space() {
      avail_kb="$(df -Pk -- "$dest" 2>/dev/null | awk 'NR==2 {print $4}' || echo 0)"
      avail_kb="${avail_kb//[^0-9]/}"
      [[ -z "$avail_kb" ]] && avail_kb=0
@@ -1525,7 +1585,7 @@ index 350714c..01fcf7e
          msg_warn "Poco espacio libre en disco: ${avail_kb} KB en $dest (menos de 100 MB)."
      fi
      return 0
-@@ -2187,6 +3049,13 @@ status_label() {
+@@ -2187,6 +3095,13 @@ status_label() {
  }
  
  # Postproceso común: verificación real → metadatos → letras. Usa session.final.
@@ -1539,7 +1599,7 @@ index 350714c..01fcf7e
  post_process_session() {
      local session_final="${1-}" dest="${2-}" archive="${3-}" workdir="${4-}"
      local verified="$workdir/session.verified" failed="$workdir/session.failed"
-@@ -2199,7 +3068,14 @@ post_process_session() {
+@@ -2199,7 +3114,14 @@ post_process_session() {
      fi
  
      echo -e "  ${YELLOW}⚙${NC} Verificando integridad de ${JOB_NEW} archivo(s)..."
@@ -1555,7 +1615,7 @@ index 350714c..01fcf7e
          --archive "$archive" --out-ok "$verified" --out-failed "$failed" || vrc=$?
      JOB_VERIFY_FAILED="$(count_lines "$failed")"
      JOB_OK="$(count_lines "$verified")"
-@@ -2211,7 +3087,7 @@ post_process_session() {
+@@ -2211,7 +3133,7 @@ post_process_session() {
      (( JOB_OK == 0 )) && return 0
  
      echo -e "  ${YELLOW}⚙${NC} Reparando metadatos${COVER_LOCAL:+ y portada manual} de ${JOB_OK} pista(s)..."
@@ -1564,7 +1624,7 @@ index 350714c..01fcf7e
  
      if [[ "$FETCH_LYRICS" == "true" ]]; then
          echo -e "  ${YELLOW}⚙${NC} Buscando e incrustando letras (${JOB_OK} en cola)..."
-@@ -2223,20 +3099,193 @@ post_process_session() {
+@@ -2223,20 +3145,193 @@ post_process_session() {
      return 0
  }
  
@@ -1759,7 +1819,7 @@ index 350714c..01fcf7e
      if ! mkdir -p -- "$dest"; then
          msg_err "No se pudo crear la carpeta de destino: $dest"
          JOB_STATUS="failed"; JOB_CLASS="permanent"
-@@ -2273,6 +3322,29 @@ _download_job_body() {
+@@ -2273,6 +3368,29 @@ _download_job_body() {
              ;;
      esac
      build_common_flags "$archive"
@@ -1789,7 +1849,7 @@ index 350714c..01fcf7e
  
      local use_parallel="false" total="$detected_count"
      if [[ "$type_mode" == "song" ]]; then
-@@ -2416,7 +3488,11 @@ _download_job_body() {
+@@ -2416,7 +3534,11 @@ _download_job_body() {
      log_event INFO "job $JOB_STATUS url=$url ok=$JOB_OK err=$JOB_ERRORS verify_fail=$JOB_VERIFY_FAILED class=$JOB_CLASS"
  
      WORK_DONE=true
@@ -1802,7 +1862,7 @@ index 350714c..01fcf7e
      WORK_DIR=""
      return 0
  }
-@@ -2549,7 +3625,7 @@ recover_sessions() {
+@@ -2549,7 +3671,7 @@ recover_sessions() {
          d="${d%/}"
          # Sesiones vacías y antiguas (>14 días) se eliminan; nunca las recientes.
          if ! session_dir_has_entries "$d"; then
@@ -1811,7 +1871,7 @@ index 350714c..01fcf7e
                  rm -rf -- "$d"
              fi
              continue
-@@ -2601,10 +3677,23 @@ recover_sessions() {
+@@ -2601,10 +3723,23 @@ recover_sessions() {
  # ═══════════════════════════════════════════════════════════════
  queue_run() {
      local id="" url="" dest_field="" dest="" type_mode="" status="" summary="" err="" processed=0
@@ -1837,7 +1897,7 @@ index 350714c..01fcf7e
          QUEUE_ACTIVE_TASK="$id"
          QUEUE_TASK_ID="$id"
          url="$(py_core queue get "$id" --field url)"
-@@ -2885,6 +3974,130 @@ menu_diagnostics() {
+@@ -2885,6 +4020,130 @@ menu_diagnostics() {
      done
  }
  
@@ -1968,7 +2028,7 @@ index 350714c..01fcf7e
  # ═══════════════════════════════════════════════════════════════
  #  INICIO
  # ═══════════════════════════════════════════════════════════════
-@@ -2895,16 +4108,24 @@ OtterRip $OTTERRIP_VERSION — descargador de audio con letras
+@@ -2895,16 +4154,24 @@ OtterRip $OTTERRIP_VERSION — descargador de audio con letras
  Uso: $(basename "$0") [opción | URL [carpeta_destino]]
    (sin opción)           menú interactivo
    <URL> [carpeta_destino] descarga directa (no interactiva) y salida con código de retorno
@@ -1995,7 +2055,7 @@ index 350714c..01fcf7e
  EOF
  }
  
-@@ -2918,6 +4139,28 @@ select_python_readonly() {
+@@ -2918,6 +4185,28 @@ select_python_readonly() {
  }
  
  main() {
@@ -2024,7 +2084,7 @@ index 350714c..01fcf7e
      # Bloque 1: opciones sin efectos secundarios (salen inmediatamente).
      case "${1-}" in
          --version|-V) printf 'OtterRip %s\n' "$OTTERRIP_VERSION"; return 0 ;;
-@@ -2938,6 +4181,8 @@ main() {
+@@ -2938,6 +4227,8 @@ main() {
          --queue-run) ;;
          --check-deps) ;;
          --add|--enqueue) ;;
@@ -2033,7 +2093,7 @@ index 350714c..01fcf7e
          -q|--quality|-j|--jobs|--no-lyrics|--cookies-from-browser|--cookies) ;;
          *)
              if is_http_url "${1-}"; then
-@@ -2954,6 +4199,12 @@ main() {
+@@ -2954,6 +4245,12 @@ main() {
      init_runtime_dirs
      load_config || true
  
@@ -2046,7 +2106,7 @@ index 350714c..01fcf7e
      # --check-deps ahora tiene los directorios creados para write_deps_cache.
      if [[ "${1-}" == "--check-deps" ]]; then
          install_deps --check-deps
-@@ -2967,6 +4218,9 @@ main() {
+@@ -2967,6 +4264,9 @@ main() {
      refresh_syncedlyrics_state || true
      recover_sessions || true
  
@@ -2056,7 +2116,7 @@ index 350714c..01fcf7e
      # --add / --enqueue: añadir URLs a la cola sin menú interactivo.
      if [[ "${1-}" == "--add" || "${1-}" == "--enqueue" ]]; then
          shift || true
-@@ -2979,8 +4233,9 @@ main() {
+@@ -2979,8 +4279,9 @@ main() {
      fi
  
      # Descarga directa no interactiva con flags rápidos opcionales:
@@ -2068,7 +2128,7 @@ index 350714c..01fcf7e
          while (( $# > 0 )); do
              case "${1-}" in
                  -q|--quality)
-@@ -2990,7 +4245,7 @@ main() {
+@@ -2990,7 +4291,7 @@ main() {
                      ;;
                  -j|--jobs)
                      shift || true
@@ -2077,7 +2137,7 @@ index 350714c..01fcf7e
                          msg_err "Número de workers inválido: ${1-} (usa 1-32)"
                          return 2
                      fi
-@@ -2999,6 +4254,15 @@ main() {
+@@ -2999,6 +4300,15 @@ main() {
                  --no-lyrics)
                      FETCH_LYRICS="false"
                      ;;
@@ -2093,7 +2153,7 @@ index 350714c..01fcf7e
                  --cookies-from-browser)
                      shift || true
                      if [[ -z "${1-}" || ! "${1-}" =~ ^[a-zA-Z0-9_.:+-]+$ ]]; then
-@@ -3043,6 +4307,14 @@ main() {
+@@ -3043,6 +4353,14 @@ main() {
          return 0
      fi
  

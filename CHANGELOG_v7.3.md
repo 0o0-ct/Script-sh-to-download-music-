@@ -134,7 +134,7 @@ peligrosas:
 - **4.6** Nuevos flags `--verbose` (muestra los comandos completos de yt-dlp) y
   `--debug` (`set -x`, vuelco del estado interno y conservación de los
   temporales). `log_debug()` y `dump_state()` son los helpers asociados.
-- **4.7** Nueva suite de pruebas BATS `tests/test_otterrip.bats` con **79
+- **4.7** Nueva suite de pruebas BATS `tests/test_otterrip.bats` con **83
   pruebas** que cubren `safe_name`, `resolve_destination`, `normalize_jobs`,
   `is_positive_int`, `apply_quality_choice`, el ciclo `load_config`/
   `save_config`, `build_common_flags`, la caché de dependencias (incluida la
@@ -196,6 +196,87 @@ a quien usa el repositorio y a quien descarga solo el `.sh`.
 Se han añadido 6 pruebas de regresión (`session_to_ids` y una prueba de
 extremo a extremo contra `verify-session`).
 
+### Mejora: segunda pasada de letras en modo plano
+
+Por defecto `LYRICS_PREFER_SYNCED=true`, y el backend solo acepta letras **con
+marcas de tiempo** (sincronizadas). Una canción que en las fuentes solo tiene
+letra plana se descartaba, aunque esa letra existiera:
+
+```
+PREDETERMINADO (prefer_synced=True, plain_ok=False): DESCARTADA
+CON --plain-ok (prefer_synced=False, plain_ok=True):  ENCONTRADA
+```
+
+Ahora, si tras la primera pasada quedan pistas sin letra, `process_lyrics()`
+lanza una **segunda pasada en modo plano** sobre ellas:
+
+- las pistas que ya tenían letra se saltan (`already`), así que no se
+  reemplaza ninguna letra ya incrustada;
+- el reintento se hace sin `--upgrade-plain`, para no tocar letras existentes;
+- los dos resúmenes se combinan (`merge_lyrics_summary`) y el resultado que ve
+  el usuario es el total real.
+
+Verificado con una canción que solo tiene letra plana: antes `notfound=1`,
+ahora `found=1` con la letra incrustada en el fichero.
+
+### Corrección: la letra se incrustaba pero sin sincronizar (FLAC y M4A)
+
+**Síntoma:** la letra se incrustaba en el fichero, pero se veía como **texto
+plano**, sin ir sincronizada con el audio.
+
+**Causa raíz:** `_embed_lyrics()` solo conservaba las marcas de tiempo en MP3:
+
+| Formato | Antes | Ahora |
+|---|---|---|
+| MP3 | `SYLT` (sincronizada) + `USLT` (plana) | igual |
+| FLAC | `LYRICS` (plana) → **timestamps perdidos** | `SYNCEDLYRICS` (sincronizada) + `LYRICS` (plana) |
+| M4A | `©lyr` (plana) → **timestamps perdidos** | `----:com.apple.iTunes:LYRICS` (sincronizada) + `©lyr` (plana) |
+
+Como el perfil por defecto es **M4A** (`QUALITY_CHOICE=3`), todas las descargas
+del usuario acababan con la letra en texto plano, aunque la fuente tuviera la
+letra sincronizada.
+
+**Solución:** el backend ahora escribe la letra sincronizada en el contenedor
+correcto de cada formato, manteniendo además el texto plano:
+
+- **FLAC** → `SYNCEDLYRICS` con el LRC completo (`[mm:ss.xxx]`), que es la
+  convención de Vorbis que leen foobar2000, Picard y otros reproductores.
+- **M4A** → el átomo libre `----:com.apple.iTunes:LYRICS` con el LRC, que es la
+  convención de iTunes/Apple Music/Picard.
+- `_has_lyrics()` ahora reconoce también las variantes sincronizadas, para no
+  volver a procesar un fichero que ya tiene letra.
+
+Verificado sobre ficheros reales: los tres formatos conservan ahora las marcas
+de tiempo (`[00:05.059] …`).
+
+> **Nota de publicación:** este cambio está en `lib/otterrip_core/lyrics.py`,
+> que forma parte del paquete del backend. El paquete publicado `v7.2.0` y su
+> SHA-256 **no se han tocado**, así que el release vigente sigue funcionando
+> intacto. Para que el arreglo llegue también a quien descarga solo el `.sh`,
+> hay que publicar la `v7.3.0` (ver "Publicar una versión nueva" en el README):
+> reconstruir el paquete, actualizar `BACKEND_SHA256` y crear la etiqueta
+> `v7.3.0`. Mientras tanto, el arreglo ya está activo para quien ejecuta el
+> script desde este repositorio.
+
+### Cascada de proveedores (sin cambios: ya funcionaba)
+
+Los proveedores por defecto son `lrclib,multiweb`, y la cascada real es de
+**5 fuentes**:
+
+| # | Fuente | Vía |
+|---|--------|-----|
+| 1 | LRCLIB | adaptador propio (`adapters/lrclib.py`), acepta sincronizada o plana |
+| 2 | Musixmatch | `syncedlyrics` |
+| 3 | NetEase | `syncedlyrics` |
+| 4 | Megalobiz | `syncedlyrics` |
+| 5 | Genius | `syncedlyrics` |
+
+- Si un proveedor falla o agota su tiempo de espera, se continúa con el
+  siguiente (nunca se aborta la búsqueda completa).
+- `lrclib` no se consulta dos veces: si ya está como proveedor propio, se
+  excluye de las fuentes de Multi-Web.
+- Dentro de Multi-Web, si una fuente falla se pasa a la siguiente.
+
 ---
 
 ## FASE 5 — Funcionalidad nueva
@@ -224,8 +305,8 @@ extremo a extremo contra `verify-session`).
 |---|---|
 | `bash -n Down-Linux-music_v7.sh` | Sin errores |
 | `shellcheck -x -s bash Down-Linux-music_v7.sh` | **0 errores y 0 avisos** |
-| `bats tests/test_otterrip.bats` | 79/79 pruebas correctas |
-| `PYTHONPATH=lib python3 -m unittest discover -s tests` | 34/34 pruebas correctas |
+| `bats tests/test_otterrip.bats` | 83/83 pruebas correctas |
+| `PYTHONPATH=lib python3 -m unittest discover -s tests` | 37/37 pruebas correctas |
 | `--version`, `--help`, `--check-deps` | Correctos |
 | Descarga real (YouTube, secuencial y paralela) | Correcta |
 | `set -Eeuo pipefail` | Sin salidas prematuras en los flujos probados |

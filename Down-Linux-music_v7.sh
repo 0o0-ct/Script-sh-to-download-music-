@@ -2212,6 +2212,24 @@ lyrics_common_args() {
     return 0
 }
 
+# Combina dos resúmenes de letras (found/notfound/already) en el principal.
+# El segundo resumen corresponde al reintento en modo plano: las pistas que ya
+# tenían letra pasan a "already" y las nuevas se suman a "found".
+merge_lyrics_summary() {
+    local main="${1-}" extra="${2-}"
+    [[ -n "$main" && -f "$main" ]] || return 0
+    [[ -n "$extra" && -f "$extra" ]] || return 0
+    local f1 a1 f2 n2 a2
+    f1="$(summary_value "$main" found 0)"
+    a1="$(summary_value "$main" already 0)"
+    f2="$(summary_value "$extra" found 0)"
+    n2="$(summary_value "$extra" notfound 0)"
+    a2="$(summary_value "$extra" already 0)"
+    printf 'found=%s\nnotfound=%s\nalready=%s\n' \
+        "$(( f1 + f2 ))" "$n2" "$(( a1 + a2 ))" > "$main" 2>/dev/null || true
+    return 0
+}
+
 process_lyrics() {
     local dir="${1-}" fmt="${2-}" session_file="${3-}" summary_file="${4-}"
     local rc=0
@@ -2226,6 +2244,34 @@ process_lyrics() {
     [[ -n "$session_file" ]] && args+=(--session "$session_file")
     [[ -n "$summary_file" ]] && args+=(--summary "$summary_file")
     py_core "${args[@]}" || rc=$?
+
+    # Segundo intento: si quedan pistas sin letra se reintenta aceptando
+    # también letras planas. Por defecto solo se aceptan letras sincronizadas
+    # (con marcas de tiempo), así que una canción que solo tenga letra plana
+    # se descartaría en el primer intento aunque exista en alguna fuente.
+    if [[ -n "$summary_file" && "$LYRICS_PREFER_SYNCED" == "true" ]]; then
+        local pending=0
+        pending="$(summary_value "$summary_file" notfound 0)"
+        if [[ "$pending" =~ ^[0-9]+$ ]] && (( pending > 0 )); then
+            # Sin --upgrade-plain: el reintento no debe reemplazar letras ya
+            # incrustadas (las que ya tienen letra se saltan como "already").
+            local -a plain_args=()
+            local i=0
+            for ((i = 0; i < ${#LYRICS_ARGS[@]}; i++)); do
+                [[ "${LYRICS_ARGS[$i]}" == "--upgrade-plain" ]] && continue
+                plain_args+=("${LYRICS_ARGS[$i]}")
+            done
+            local retry_summary="${summary_file}.plain"
+            local -a retry=(lyrics "$dir" "$fmt" "${plain_args[@]}" --jobs "$PARALLEL_JOBS" --plain-ok)
+            [[ -n "$session_file" ]] && retry+=(--session "$session_file")
+            retry+=(--summary "$retry_summary")
+            echo -e "  ${DIM}· Segundo intento (letra plana) en ${pending} pista(s) sin letras...${NC}"
+            py_core "${retry[@]}" >/dev/null 2>&1 || true
+            merge_lyrics_summary "$summary_file" "$retry_summary"
+            rm -f -- "$retry_summary" 2>/dev/null || true
+        fi
+    fi
+
     case "$rc" in
         0) return 0 ;;
         14) echo "  ${YELLOW}⚠${NC} El servicio de letras no estaba disponible (se puede reintentar más tarde)." ;;

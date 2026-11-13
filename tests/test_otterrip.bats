@@ -615,3 +615,32 @@ inyeccion"
     [ -s "$TEST_ROOT/ok.txt" ]
     [ ! -s "$TEST_ROOT/fail.txt" ]
 }
+
+# ── Cascada de proveedores de letras ───────────────────────────
+
+@test "los proveedores por defecto son lrclib y multiweb" {
+    [ "$LYRICS_PROVIDERS" = "lrclib,multiweb" ]
+}
+
+@test "merge_lyrics_summary combina los dos resúmenes" {
+    printf 'found=2\nnotfound=3\nalready=1\n' > "$TEST_ROOT/res1.txt"
+    printf 'found=4\nnotfound=1\nalready=3\n' > "$TEST_ROOT/res2.txt"
+    merge_lyrics_summary "$TEST_ROOT/res1.txt" "$TEST_ROOT/res2.txt"
+    [ "$(summary_value "$TEST_ROOT/res1.txt" found 0)" = "6" ]
+    [ "$(summary_value "$TEST_ROOT/res1.txt" notfound 0)" = "1" ]
+    [ "$(summary_value "$TEST_ROOT/res1.txt" already 0)" = "4" ]
+}
+
+@test "merge_lyrics_summary no rompe si falta el segundo resumen" {
+    printf 'found=2\nnotfound=3\nalready=1\n' > "$TEST_ROOT/res3.txt"
+    merge_lyrics_summary "$TEST_ROOT/res3.txt" "$TEST_ROOT/no-existe.txt"
+    [ "$(summary_value "$TEST_ROOT/res3.txt" found 0)" = "2" ]
+    [ "$(summary_value "$TEST_ROOT/res3.txt" notfound 0)" = "3" ]
+}
+
+@test "process_lyrics no hace nada si las letras están desactivadas" {
+    FETCH_LYRICS="false"
+    run process_lyrics "$TEST_ROOT" "m4a" "" "$TEST_ROOT/sum-off.txt"
+    [ "$status" -eq 0 ]
+    [ "$(summary_value "$TEST_ROOT/sum-off.txt" found 0)" = "0" ]
+}

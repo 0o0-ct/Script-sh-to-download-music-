@@ -14,15 +14,19 @@ from unittest.mock import patch, MagicMock
 
 from mutagen.id3 import ID3, SYLT, USLT
 from mutagen.mp3 import MP3
+from mutagen.flac import FLAC, VCommentDict
+from mutagen.mp4 import MP4, MP4Tags
 
 from otterrip_core.models import LyricsResult, SyncLevel
 from otterrip_core.adapters.base import BaseProvider, SongQuery
 from otterrip_core.adapters.lrclib import LrclibProvider, _parse_lrc
 from otterrip_core.adapters.multiweb import MultiwebProvider
 from otterrip_core.lyrics import (
+    ITUNES_SYNCED_ATOM,
     _format_lrc,
     _collect_files,
     _embed_lyrics,
+    _has_lyrics,
     _process_files_concurrently,
     _search_cascade,
     run_lyrics,
@@ -356,6 +360,59 @@ class TestLyricsEmbedding(unittest.TestCase):
         self.assertEqual(len(plain_frames), 1)
         self.assertIsInstance(plain_frames[0], USLT)
         self.assertEqual(plain_frames[0].text, "First line\nSecond line")
+
+    def test_flac_keeps_synced_lyrics_in_syncedlyrics_tag(self):
+        # Regresión: el FLAC solo conservaba el texto plano y perdía las
+        # marcas de tiempo, así que la letra no se sincronizaba con el audio.
+        audio = FLAC.__new__(FLAC)
+        audio.tags = VCommentDict()
+        lyrics = LyricsResult(
+            provider="test",
+            sync_level=SyncLevel.LINES,
+            plain_text="First line\nSecond line",
+            timed_entries=[(1.234, "First line"), (5.0, "Second line")],
+        )
+
+        with patch.object(FLAC, "save"):
+            self.assertTrue(_embed_lyrics(audio, lyrics))
+
+        self.assertEqual(audio["LYRICS"], ["First line", "Second line"])
+        synced = audio["SYNCEDLYRICS"][0]
+        self.assertIn("[00:01.234]", synced)
+        self.assertIn("[00:05.000]", synced)
+
+    def test_m4a_keeps_synced_lyrics_in_itunes_atom(self):
+        # Regresión: el M4A solo conservaba el texto plano (©lyr) y perdía las
+        # marcas de tiempo, así que la letra no se sincronizaba con el audio.
+        audio = MP4.__new__(MP4)
+        audio.tags = MP4Tags()
+        lyrics = LyricsResult(
+            provider="test",
+            sync_level=SyncLevel.LINES,
+            plain_text="First line\nSecond line",
+            timed_entries=[(1.234, "First line"), (5.0, "Second line")],
+        )
+
+        with patch.object(MP4, "save"):
+            self.assertTrue(_embed_lyrics(audio, lyrics))
+
+        self.assertEqual(audio.tags["\xa9lyr"], ["First line\nSecond line"])
+        atom = audio.tags[ITUNES_SYNCED_ATOM][0]
+        if isinstance(atom, bytes):
+            atom = atom.decode("utf-8")
+        self.assertIn("[00:01.234]", atom)
+        self.assertIn("[00:05.000]", atom)
+
+    def test_has_lyrics_detects_synced_only_tags(self):
+        flac = FLAC.__new__(FLAC)
+        flac.tags = VCommentDict()
+        flac["SYNCEDLYRICS"] = ["[00:01.000]Only synced"]
+        self.assertTrue(_has_lyrics(flac))
+
+        mp4 = MP4.__new__(MP4)
+        mp4.tags = MP4Tags()
+        mp4.tags[ITUNES_SYNCED_ATOM] = [b"[00:01.000]Only synced"]
+        self.assertTrue(_has_lyrics(mp4))
 
     def test_cascade_uses_next_provider_after_invalid_result(self):
         query = SongQuery(title="Song", artist="Artist")

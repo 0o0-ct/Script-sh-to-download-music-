@@ -63,9 +63,50 @@ Para publicar una versión nueva:
 No apuntes el bootstrapper a `main`: la URL del backend y el digest se fijan por
 versión.
 
+## Línea de comandos
+
+```bash
+otterrip                                  # menú interactivo
+otterrip <URL> [carpeta]                  # descarga directa (código de salida)
+otterrip -q 3 -j 8 --proxy socks5://127.0.0.1:1080 <URL>
+otterrip --batch lista.txt                # una URL por línea ("#" comenta)
+otterrip --dry-run <URL>                  # muestra el plan, no descarga nada
+otterrip --verbose <URL>                  # muestra los comandos de yt-dlp
+otterrip --debug <URL>                    # traza y conserva los temporales
+otterrip --history                        # historial de descargas
+otterrip --add <URL>...                   # encola sin abrir el menú
+otterrip --queue-run                      # procesa la cola
+otterrip --check-deps                     # verificación completa de dependencias
+```
+
+Variables de entorno: `OTTERRIP_DOWNLOADS`, `PARALLEL_JOBS`, `OTTERRIP_PROXY`,
+`OTTERRIP_NOTIFY`, `OTTERRIP_CHECK_UPDATES`, `OTTERRIP_ASSUME_YES`,
+`OTTERRIP_YTDLP`, `OTTERRIP_COOKIES_BROWSER` y `OTTERRIP_COOKIES_FILE`.
+
+El historial de descargas se guarda en
+`$XDG_DATA_HOME/otterrip/history.tsv` (`timestamp`, `url`, `title`, `dest`,
+`status`, `duration_secs`).
+
 ## Pruebas
 
 ```bash
 PYTHONPATH=lib python3 -m unittest discover -s tests -v
+bats tests/test_otterrip.bats
 bash -n Down-Linux-music_v7.sh
+shellcheck -x -s bash Down-Linux-music_v7.sh
 ```
+
+## Seguridad
+
+- La caché de dependencias se **lee**, nunca se ejecuta: solo se aceptan líneas
+  `CLAVE=valor` con una lista blanca de claves.
+- Las URL se pasan a yt-dlp tras `--` y se rechaza cualquier URL que empiece
+  por `-`, de modo que no pueden inyectarse opciones.
+- Los binarios (`python`, `yt-dlp`) se validan antes de ejecutarse: ruta
+  absoluta, ejecutable y fuera de directorios escribibles por cualquiera.
+- El paquete del backend se rechaza si contiene enlaces simbólicos o duros,
+  más de 500 miembros o más de 50 MB descomprimidos.
+- Los temporales se crean con `mktemp` en directorios privados y se verifican
+  para descartar ataques por symlink.
+
+Los cambios detallados están en [CHANGELOG_v7.3.md](CHANGELOG_v7.3.md).

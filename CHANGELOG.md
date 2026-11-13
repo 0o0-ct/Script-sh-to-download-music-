@@ -1,5 +1,48 @@
 # Changelog
 
+## [7.3.0] - 2026-11-13
+
+### Added
+
+- `lyrics verify <dir>`: read-only audit of library lyrics. Classifies each
+  track as OK / WARN / FAIL (no lyrics, broken timestamps, empty tag, orphan
+  sidecar). Reports per-track + totals. Exit code != 0 if any FAIL.
+- `lyrics repair <dir>`: re-embeds lyrics from sidecar .lrc into audio tags;
+  `--dry-run` mandatory before applying. Backup .bak + atomic write (temp +
+  rename). Post-write re-read and re-validation (OK/WARN/FAIL per track).
+- `lyrics shift <file> <+/-ms>`: adjusts offset on both embedded tag AND
+  sidecar .lrc. Reuses `offset.py`. Post-write verification.
+- Library summary counters: synced lyrics (SYLT/LRC), plain lyrics (USLT
+  without timestamps), and no lyrics — shown in verify/repair reports.
+- Enhanced LRC module (`enhanced_lrc.py`): parser/serializer for word-level
+  timestamps `<mm:ss.xxx>`. Conversion from/to standard LRC. Validation with
+  monotonicity and tolerance checks.
+- Word-level alignment stub (`align_words_stub`) with graceful fallback when
+  `stable-ts` / `librosa` are not installed.
+- `requirements-align.txt`: separate heavy dependencies for opt-in word-level
+  alignment.
+- Bash menu integration: Advanced Lyrics Manager items 7/8 now invoke
+  `lyrics-manage verify` / `lyrics-manage repair` with `--dry-run` preview
+  and `--lang` derived from `LYRICS_LANG`.
+- GitHub Actions CI workflow: pytest + shellcheck on push/PR.
+
+### Changed
+
+- Backend tar rebuilt from working tree: `query_clean.py` now includes the
+  `(feat.)` parenthetical fix. `BACKEND_SHA256` updated.
+- `REQUIRED_FILES` updated with `lyrics_verify.py` and `enhanced_lrc.py`.
+- Language ISO-3 code (`_lang_iso3`) derived from `LYRICS_LANG` instead of
+  hardcoded `"eng"`.
+- Test suite expanded: 101 tests (was 68), covering Enhanced LRC (≥10 edge
+  cases), verify, repair, shift, and lrc_validator.
+
+### Fixed
+
+- Backend archive SHA-256 mismatch: distributed tar no longer matches working
+  tree `query_clean.py`. Rebuilt and hash updated.
+- Menu 7/8 in Advanced Lyrics Manager now use dedicated lyrics commands
+  instead of generic `library` / `repair`.
+
 ## [7.2.1] - 2026-11-13
 
 ### Added

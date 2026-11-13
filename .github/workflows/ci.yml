@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main, canary]
+  pull_request:
+    branches: [main, canary]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run pytest
+        run: |
+          PYTHONPATH=lib python -m pytest tests/ -q
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          check_together: true
+          format: tty
+          shellcheck_version: stable
+        env:
+          SHELLCHECK_OPTS: "-e SC1091,SC2039,SC2129"

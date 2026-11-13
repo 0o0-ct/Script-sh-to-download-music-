@@ -22,6 +22,7 @@ from otterrip_core import queue
 from otterrip_core import library
 from otterrip_core import repair
 from otterrip_core import convert
+from otterrip_core import lyrics_verify
 
 
 def positive_int(value: str) -> int:
@@ -161,6 +162,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dest", required=True)
     p.add_argument("--quality", default="")
 
+    # --- lyrics-manage (verify / repair / shift) ---
+    p = sub.add_parser("lyrics-manage", help="Lyrics library management")
+    lm_sub = p.add_subparsers(dest="lyrics_manage_cmd")
+
+    p_verify = lm_sub.add_parser("verify", help="Verify lyrics in a directory")
+    p_verify.add_argument("path")
+
+    p_repair = lm_sub.add_parser("repair", help="Repair lyrics in a directory")
+    p_repair.add_argument("path")
+    p_repair.add_argument("--dry-run", action="store_true", default=False)
+    p_repair.add_argument("--lang", default="")
+
+    p_shift = lm_sub.add_parser("shift", help="Shift LRC timestamps (tag + sidecar)")
+    p_shift.add_argument("file")
+    p_shift.add_argument("ms", type=int)
+    p_shift.add_argument("--lang", default="")
+
     return parser
 
 
@@ -176,6 +194,7 @@ COMMAND_MAP = {
     "library": library.run_library,
     "repair": repair.run_repair,
     "convert": convert.run_convert,
+    "lyrics-manage": lyrics_verify.run_lyrics_manage,
 }
 
 

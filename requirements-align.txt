@@ -1,0 +1,6 @@
+# Heavy dependencies for word-level lyrics alignment (opt-in).
+# Install only when LYRICS_SYNC_LEVEL=word is needed:
+#   pip install -r requirements-align.txt
+
+stable-ts>=0.1.0
+librosa>=0.10.0

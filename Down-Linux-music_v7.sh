@@ -34,7 +34,7 @@ readonly PROGRESS_POLL_INTERVAL=2       # Segundos entre sondeos del progreso pa
 # de forma silenciosa ni deja procesos huérfanos a medias.
 trap '' PIPE
 
-OTTERRIP_VERSION="7.2.1"
+OTTERRIP_VERSION="7.3.0"
 OTTERRIP_REPO="0o0-ct/Script-sh-to-download-music-"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
@@ -50,7 +50,7 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
 LIB_DIR="$SCRIPT_DIR/lib"
 REQUIREMENTS_FILE="$SCRIPT_DIR/requirements.txt"
-BACKEND_SHA256="8bbffdaefdb2d1bd3677cb52dfe94dfae7bdc5eccd166530c997c48521cdf524"
+BACKEND_SHA256="4ed277612f30db2cd426ff8bf8d78499148277147fba8f6bd040453be90b9533"
 BACKEND_ARCHIVE_URL="https://raw.githubusercontent.com/0o0-ct/Script-sh-to-download-music-/v${OTTERRIP_VERSION}/packages/otterrip-backend-v${OTTERRIP_VERSION}.tar.gz"
 
 # ── Directorios XDG (los valores relativos se ignoran, según la especificación)
@@ -4111,18 +4111,21 @@ menu_lyrics_manager() {
             7)
                 ask_path "Carpeta de biblioteca" "$(destination_display)" || { sleep 1; continue; }
                 echo -e "\n  ${YELLOW}⚙${NC} Verificando letras en: $ASKED_PATH\n"
-                py_core library "$ASKED_PATH" || true
+                local lang_arg=()
+                [[ -n "$LYRICS_LANG" ]] && lang_arg=(--lang "$LYRICS_LANG")
+                py_core lyrics-manage verify "$ASKED_PATH" "${lang_arg[@]}" || true
                 pause_enter
                 ;;
             8)
                 ask_path "Carpeta de biblioteca" "$(destination_display)" || { sleep 1; continue; }
-                local -a repair_extra=()
-                confirm "¿Quitar ruido de títulos también?" && repair_extra+=(--clean-noise)
-                echo -e "\n  ${YELLOW}Simulación (no se modifica nada)${NC}\n"
-                py_core repair "$ASKED_PATH" "${repair_extra[@]}" || true
+                local lang_arg=()
+                [[ -n "$LYRICS_LANG" ]] && lang_arg=(--lang "$LYRICS_LANG")
+                echo -e "\n  ${YELLOW}Simulación de reparación (no se modifica nada)${NC}\n"
+                py_core lyrics-manage repair "$ASKED_PATH" --dry-run "${lang_arg[@]}" || true
                 echo ""
                 if confirm "¿Aplicar estos cambios?"; then
-                    py_core repair "$ASKED_PATH" --apply "${repair_extra[@]}" || true
+                    echo -e "\n  ${YELLOW}⚙${NC} Reparando letras...\n"
+                    py_core lyrics-manage repair "$ASKED_PATH" "${lang_arg[@]}" || true
                 else
                     echo -e "  ${DIM}Sin cambios.${NC}"
                 fi

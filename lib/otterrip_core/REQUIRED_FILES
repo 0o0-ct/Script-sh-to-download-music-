@@ -6,6 +6,7 @@ adapters/lrclib.py
 adapters/multiweb.py
 classify_log.py
 convert.py
+enhanced_lrc.py
 doctor.py
 fix_metadata.py
 library.py
@@ -16,6 +17,7 @@ lrc_cache.py
 lrc_validator.py
 merge_sessions.py
 models.py
+lyrics_verify.py
 offset.py
 query_clean.py
 queue.py

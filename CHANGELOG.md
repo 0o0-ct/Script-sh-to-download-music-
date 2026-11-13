@@ -42,6 +42,16 @@
   tree `query_clean.py`. Rebuilt and hash updated.
 - Menu 7/8 in Advanced Lyrics Manager now use dedicated lyrics commands
   instead of generic `library` / `repair`.
+- LRC timestamp format: changed from `[mm:ss.xxx]` (3 digits) to
+  `[mm:ss.xx]` (2 digits centiseconds) for BlackPlayer, PowerAmp, and
+  Samsung Music compatibility.
+- `split_feat()` now extracts featured artists even when trailing noise
+  (e.g. `[Lyrics]`) follows the `(feat. ...)` parenthetical — improves
+  search accuracy for songs with featured artists.
+- Sidecar `.lrc` file is now generated for plain lyrics too (when
+  `LYRICS_SIDECAR=true`), not only for synced lyrics — improves
+  compatibility with players that only read sidecar files.
+- `pyproject.toml` added so `pytest` runs without manual `PYTHONPATH`.
 
 ## [7.2.1] - 2026-11-13
 

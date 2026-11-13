@@ -50,7 +50,7 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
 LIB_DIR="$SCRIPT_DIR/lib"
 REQUIREMENTS_FILE="$SCRIPT_DIR/requirements.txt"
-BACKEND_SHA256="4ed277612f30db2cd426ff8bf8d78499148277147fba8f6bd040453be90b9533"
+BACKEND_SHA256="b4d60b8d0cb48e3ccd963048ab1184aded7ca49c5378fa185781348537f25169"
 BACKEND_ARCHIVE_URL="https://raw.githubusercontent.com/0o0-ct/Script-sh-to-download-music-/v${OTTERRIP_VERSION}/packages/otterrip-backend-v${OTTERRIP_VERSION}.tar.gz"
 
 # ── Directorios XDG (los valores relativos se ignoran, según la especificación)

@@ -179,8 +179,8 @@ class TestFormatLrc(unittest.TestCase):
     def test_format_lrc(self):
         entries = [(0.0, "start"), (65.5, "one minute")]
         text = _format_lrc(entries)
-        self.assertIn("[00:00.000] start", text)
-        self.assertIn("[01:05.500] one minute", text)
+        self.assertIn("[00:00.00] start", text)
+        self.assertIn("[01:05.50] one minute", text)
 
 
 class TestMultiwebAdapter(unittest.TestCase):
@@ -394,12 +394,12 @@ class TestLyricsEmbedding(unittest.TestCase):
 
         # LYRICS ahora contiene LRC con timestamps cuando hay sync
         lyr_lines = audio["LYRICS"]
-        self.assertIn("[00:01.234] First line", lyr_lines)
-        self.assertIn("[00:05.000] Second line", lyr_lines)
+        self.assertIn("[00:01.23] First line", lyr_lines)
+        self.assertIn("[00:05.00] Second line", lyr_lines)
         # SYNCEDLYRICS también debe contener los timestamps
         synced = audio["SYNCEDLYRICS"][0]
-        self.assertIn("[00:01.234]", synced)
-        self.assertIn("[00:05.000]", synced)
+        self.assertIn("[00:01.23]", synced)
+        self.assertIn("[00:05.00]", synced)
 
     def test_m4a_keeps_synced_lyrics_in_itunes_atom(self):
         # Regresión: el M4A solo conservaba el texto plano (©lyr) y perdía las
@@ -420,14 +420,14 @@ class TestLyricsEmbedding(unittest.TestCase):
 
         # ©lyr ahora contiene LRC con timestamps cuando hay sync
         lyr_content = audio.tags["\xa9lyr"][0]
-        self.assertIn("[00:01.234] First line", lyr_content)
-        self.assertIn("[00:05.000] Second line", lyr_content)
+        self.assertIn("[00:01.23] First line", lyr_content)
+        self.assertIn("[00:05.00] Second line", lyr_content)
         # El átomo iTunes también debe contener los timestamps
         atom = audio.tags[ITUNES_SYNCED_ATOM][0]
         if isinstance(atom, bytes):
             atom = atom.decode("utf-8")
-        self.assertIn("[00:01.234]", atom)
-        self.assertIn("[00:05.000]", atom)
+        self.assertIn("[00:01.23]", atom)
+        self.assertIn("[00:05.00]", atom)
 
     def test_flac_plain_lyrics_no_timestamps(self):
         # Cuando no hay sync, LYRICS debe contener texto plano sin timestamps.
@@ -464,12 +464,12 @@ class TestLyricsEmbedding(unittest.TestCase):
     def test_has_lyrics_detects_synced_only_tags(self):
         flac = FLAC.__new__(FLAC)
         flac.tags = VCommentDict()
-        flac["SYNCEDLYRICS"] = ["[00:01.000]Only synced"]
+        flac["SYNCEDLYRICS"] = ["[00:01.00]Only synced"]
         self.assertTrue(_has_lyrics(flac))
 
         mp4 = MP4.__new__(MP4)
         mp4.tags = MP4Tags()
-        mp4.tags[ITUNES_SYNCED_ATOM] = [b"[00:01.000]Only synced"]
+        mp4.tags[ITUNES_SYNCED_ATOM] = [b"[00:01.00]Only synced"]
         self.assertTrue(_has_lyrics(mp4))
 
     def test_cascade_uses_next_provider_after_invalid_result(self):

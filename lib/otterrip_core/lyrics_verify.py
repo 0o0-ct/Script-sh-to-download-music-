@@ -24,7 +24,7 @@ try:
     from mutagen.mp3 import MP3
     from mutagen.flac import FLAC
     from mutagen.mp4 import MP4
-    from mutagen.id3 import ID3, USLT, SYLT, ID3NoHeaderError
+    from mutagen.id3 import ID3, USLT, SYLT, TXXX, ID3NoHeaderError
     HAS_MUTAGEN = True
 except ImportError:
     HAS_MUTAGEN = False
@@ -87,16 +87,23 @@ def _extract_embedded_lyrics(audio) -> tuple[str | None, str | None]:
     plain = None
     try:
         if isinstance(audio, MP3) and audio.tags:
-            # SYLT (synced)
-            for frame in audio.tags.getall("SYLT:"):
-                parts = []
-                for txt, ms in frame.text:
-                    m, s = divmod(ms // 1000, 60)
-                    ms_part = ms % 1000
-                    parts.append(f"[{m:02d}:{s:02d}.{ms_part // 10:02d}] {txt}")
-                if parts:
-                    synced = "\n".join(parts)
-                    break
+            # TXXX:LYRICS (PowerAmp synced lyrics) — check first
+            txxx_lyrics = audio.tags.getall("TXXX:LYRICS")
+            if txxx_lyrics:
+                candidate = "\n".join(str(t) for t in txxx_lyrics[0].text)
+                if _is_lrc_text(candidate):
+                    synced = candidate
+            # SYLT (synced) — fallback
+            if synced is None:
+                for frame in audio.tags.getall("SYLT:"):
+                    parts = []
+                    for txt, ms in frame.text:
+                        m, s = divmod(ms // 1000, 60)
+                        ms_part = ms % 1000
+                        parts.append(f"[{m:02d}:{s:02d}.{ms_part // 10:02d}] {txt}")
+                    if parts:
+                        synced = "\n".join(parts)
+                        break
             # USLT (plain)
             for frame in audio.tags.getall("USLT:"):
                 plain = "\n".join(str(t) for t in frame.text) if frame.text else None
@@ -310,6 +317,7 @@ def _embed_synced_lyrics(audio, lrc_text: str, lang: str = "eng") -> bool:
                 audio.add_tags()
             audio.tags.delall("USLT:")
             audio.tags.delall("SYLT:")
+            audio.tags.delall("TXXX:LYRICS")
             # SYLT
             synced_parts = [
                 (txt, ms) for ms, txt in entries if txt.strip()
@@ -323,6 +331,12 @@ def _embed_synced_lyrics(audio, lrc_text: str, lang: str = "eng") -> bool:
                         type=1,
                         text=synced_parts,
                     )
+                )
+            # TXXX:LYRICS with LRC format — PowerAmp reads synced lyrics from here
+            normalised = normalise_lrc(entries)
+            if normalised:
+                audio.tags.add(
+                    TXXX(encoding=3, desc="LYRICS", text=normalised)
                 )
             # USLT (plain)
             if plain_lines:

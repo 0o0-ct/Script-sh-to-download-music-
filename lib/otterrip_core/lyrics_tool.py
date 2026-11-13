@@ -34,11 +34,21 @@ def _get_audio_file(filepath: str):
 
 
 def _get_embedded_lyrics(audio) -> str | None:
-    """Extract embedded lyrics from an audio file."""
+    """Extract embedded lyrics from an audio file.
+
+    Priority: TXXX:LYRICS (PowerAmp synced) > USLT (plain) > FLAC LYRICS > MP4 ©lyr.
+    """
     if audio is None:
         return None
     try:
         if isinstance(audio, MP3) and audio.tags:
+            # TXXX:LYRICS (PowerAmp synced) — check first
+            txxx = audio.tags.getall("TXXX:LYRICS")
+            if txxx:
+                text = "\n".join(str(t) for t in txxx[0].text)
+                if text.strip():
+                    return text
+            # USLT (plain) — fallback
             for uslt in audio.tags.getall("USLT:"):
                 return str(uslt.text)
         elif isinstance(audio, FLAC) and audio.tags:
@@ -71,18 +81,22 @@ def _parse_lrc(text: str) -> list[tuple[float, str]]:
 
 
 def _format_lrc(entries: list[tuple[float, str]]) -> str:
-    """Format entries as LRC string."""
+    """Format entries as LRC string (2-digit centiseconds for compatibility)."""
     lines = []
     for ts, text in entries:
         mins = int(ts // 60)
         secs = int(ts % 60)
         ms = int((ts % 1) * 1000)
-        lines.append(f"[{mins:02d}:{secs:02d}.{ms:03d}] {text}")
+        lines.append(f"[{mins:02d}:{secs:02d}.{ms // 10:02d}] {text}")
     return "\n".join(lines)
 
 
 def _embed_lyrics_text(audio, text: str) -> None:
-    """Embed plain lyrics text into audio file."""
+    """Embed lyrics text into audio file.
+
+    If the text contains LRC timestamps, also writes TXXX:LYRICS
+    so that PowerAmp can read synced lyrics from MP3 files.
+    """
     if audio is None:
         return
     try:
@@ -91,6 +105,11 @@ def _embed_lyrics_text(audio, text: str) -> None:
                 audio.add_tags()
             audio.tags.delall("USLT:")
             audio.tags.add(USLT(encoding=3, lang="eng", text=text.split("\n")))
+            # If text looks like LRC, also write TXXX:LYRICS for PowerAmp
+            if any(l.strip().startswith("[") for l in text.split("\n") if l.strip()):
+                audio.tags.delall("TXXX:LYRICS")
+                from mutagen.id3 import TXXX
+                audio.tags.add(TXXX(encoding=3, desc="LYRICS", text=text))
         elif isinstance(audio, FLAC):
             audio["LYRICS"] = text.split("\n")
     except Exception:

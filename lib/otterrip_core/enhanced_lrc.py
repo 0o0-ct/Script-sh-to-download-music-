@@ -66,17 +66,17 @@ def _ms_from_parts(mins: int, secs: int, ms_part: str | None) -> int:
 
 
 def _format_ts_ms(ms: int) -> str:
-    """Format milliseconds as [mm:ss.xxx]."""
+    """Format milliseconds as [mm:ss.xx] (2-digit centiseconds for compatibility)."""
     m, remainder = divmod(ms, 60_000)
     s, ms_part = divmod(remainder, 1000)
-    return f"[{m:02d}:{s:02d}.{ms_part:03d}]"
+    return f"[{m:02d}:{s:02d}.{ms_part // 10:02d}]"
 
 
 def _format_word_ts_ms(ms: int) -> str:
-    """Format milliseconds as <mm:ss.xxx>."""
+    """Format milliseconds as <mm:ss.xx> (2-digit centiseconds for compatibility)."""
     m, remainder = divmod(ms, 60_000)
     s, ms_part = divmod(remainder, 1000)
-    return f"<{m:02d}:{s:02d}.{ms_part:03d}>"
+    return f"<{m:02d}:{s:02d}.{ms_part // 10:02d}>"
 
 
 # ── Parser ─────────────────────────────────────────────────────────

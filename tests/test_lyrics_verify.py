@@ -41,7 +41,7 @@ class TestEnhancedLrcParser(unittest.TestCase):
 
     def test_parse_enhanced_with_words(self):
         """Enhanced LRC with word-level timestamps."""
-        text = "[00:12.000] <00:12.000> Hello <00:12.400> world"
+        text = "[00:12.00] <00:12.00> Hello <00:12.40> world"
         elrc = parse_enhanced_lrc(text)
         self.assertEqual(len(elrc.lines), 1)
         self.assertEqual(len(elrc.lines[0].words), 2)
@@ -68,7 +68,7 @@ class TestEnhancedLrcParser(unittest.TestCase):
         """Mix of standard and enhanced lines."""
         text = (
             "[00:05.00] Standard line\n"
-            "[00:10.000] <00:10.000> Word1 <00:10.500> Word2\n"
+            "[00:10.00] <00:10.00> Word1 <00:10.50> Word2\n"
             "[00:15.00] Another standard"
         )
         elrc = parse_enhanced_lrc(text)
@@ -109,7 +109,7 @@ class TestEnhancedLrcParser(unittest.TestCase):
 
     def test_parse_word_end_ms_computed(self):
         """end_ms of each word = start_ms of next word."""
-        text = "[00:00.000] <00:00.000> A <00:01.000> B <00:02.000> C"
+        text = "[00:00.00] <00:00.00> A <00:01.00> B <00:02.00> C"
         elrc = parse_enhanced_lrc(text)
         words = elrc.lines[0].words
         self.assertEqual(words[0].end_ms, 1000)
@@ -131,8 +131,8 @@ class TestEnhancedLrcParser(unittest.TestCase):
             ]
         )
         out = serialize_enhanced_lrc(elrc)
-        self.assertIn("[00:05.000] Hello", out)
-        self.assertIn("[00:10.000] World", out)
+        self.assertIn("[00:05.00] Hello", out)
+        self.assertIn("[00:10.00] World", out)
 
     def test_serialize_enhanced(self):
         """Serialize enhanced LRC with word timestamps."""
@@ -149,8 +149,8 @@ class TestEnhancedLrcParser(unittest.TestCase):
             ]
         )
         out = serialize_enhanced_lrc(elrc)
-        self.assertIn("<00:12.000> Hello", out)
-        self.assertIn("<00:12.400> world", out)
+        self.assertIn("<00:12.00> Hello", out)
+        self.assertIn("<00:12.40> world", out)
 
     def test_serialize_headers(self):
         """Headers appear in serialized output."""

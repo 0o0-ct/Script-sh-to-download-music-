@@ -24,7 +24,7 @@ try:
     from mutagen.mp3 import MP3
     from mutagen.flac import FLAC
     from mutagen.mp4 import MP4, MP4Cover
-    from mutagen.id3 import ID3, USLT, SYLT, APIC
+    from mutagen.id3 import ID3, USLT, SYLT, APIC, TXXX
     from mutagen.id3 import ID3NoHeaderError
     HAS_MUTAGEN = True
 except ImportError:
@@ -137,7 +137,8 @@ def _format_lrc(entries: list[tuple[float, str]]) -> str:
         mins = int(ts // 60)
         secs = int(ts % 60)
         ms = int((ts % 1) * 1000)
-        lines.append(f"[{mins:02d}:{secs:02d}.{ms:03d}] {text}")
+        # 2-digit centiseconds for BlackPlayer/PowerAmp compatibility
+        lines.append(f"[{mins:02d}:{secs:02d}.{ms // 10:02d}] {text}")
     return "\n".join(lines)
 
 
@@ -157,6 +158,8 @@ def _embed_lyrics(audio, result: LyricsResult, mode: str = "embed") -> bool:
                 audio.add_tags()
             audio.tags.delall("USLT:")
             audio.tags.delall("SYLT:")
+            # Remove old TXXX:LYRICS if present
+            audio.tags.delall("TXXX:LYRICS")
 
             if result.has_sync and result.timed_entries:
                 synced_text = [
@@ -173,6 +176,12 @@ def _embed_lyrics(audio, result: LyricsResult, mode: str = "embed") -> bool:
                             type=1,
                             text=synced_text,
                         )
+                    )
+                # TXXX:LYRICS with LRC format — PowerAmp reads synced lyrics from here
+                lrc_text = _format_lrc(result.timed_entries)
+                if lrc_text:
+                    audio.tags.add(
+                        TXXX(encoding=3, desc="LYRICS", text=lrc_text)
                     )
 
             plain = result.plain_text or "\n".join(t for _, t in result.timed_entries)
@@ -724,14 +733,19 @@ async def _process_file(
 
     if mode == "embed":
         if _embed_lyrics(audio, result, mode):
-            # Sidecar .lrc (always generated when sidecar=True or when synced)
-            if best.has_sync and best.lines:
+            # Sidecar .lrc: always generate when sidecar=True or when synced
+            should_write_sidecar = sidecar or (best.has_sync and best.lines)
+            if should_write_sidecar:
                 lrc_path = fpath.with_suffix(".lrc")
                 try:
-                    lrc_entries = [(ms / 1000.0, txt) for ms, txt in best.lines]
-                    lrc_path.write_text(
-                        _format_lrc(lrc_entries), encoding="utf-8"
-                    )
+                    if best.has_sync and best.lines:
+                        lrc_entries = [(ms / 1000.0, txt) for ms, txt in best.lines]
+                        lrc_content = _format_lrc(lrc_entries)
+                    else:
+                        # Plain lyrics sidecar (no timestamps)
+                        lrc_content = best.plain or "\n".join(t for _, t in best.lines) if best.lines else ""
+                    if lrc_content:
+                        lrc_path.write_text(lrc_content, encoding="utf-8")
                     # Enhanced LRC sidecar for word-level
                     if best.kind == "word" and sidecar:
                         elrc_path = fpath.with_suffix(".elrc")

@@ -49,8 +49,9 @@ _ARTIST_TOPIC_RE = re.compile(r"\s*-\s*Topic\s*$", re.IGNORECASE)
 # Multiple whitespace.
 _WS_RE = re.compile(r"\s+")
 
-# Parenthesised feat./ft. pattern.
-_FEAT_PAREN_RE = re.compile(r"\s*\([^)]*\b(?:feat\.?|ft\.?|featuring)\b.*?\)\s*$", re.IGNORECASE)
+# Parenthesised feat./ft. pattern — does NOT require end-of-string,
+# because titles often have trailing noise like [Lyrics] after (feat. ...).
+_FEAT_PAREN_RE = re.compile(r"\s*\(\s*(?:feat\.?|ft\.?|featuring)\s+(.+?)\s*\)", re.IGNORECASE)
 
 
 def normalize_unicode(value: str) -> str:
@@ -98,16 +99,11 @@ def split_feat(title: str) -> tuple[str, str | None]:
     """
     if not title:
         return title, None
-    # Try parenthetical form first.
+    # Try parenthetical form first — matches anywhere in the string.
     m = _FEAT_PAREN_RE.search(title)
     if m:
-        inner = m.group(0)
-        feat_match = re.search(
-            r"\b(?:feat\.?|ft\.?|featuring)\s+(.+?)\s*\)", inner, re.IGNORECASE
-        )
-        if feat_match:
-            return title[: m.start()].strip(), feat_match.group(1).strip()
-    # Fallback to standard form.
+        return title[: m.start()].strip(), m.group(1).strip()
+    # Fallback to standard form (no parentheses).
     m = re.search(
         r"\s+(?:feat\.?|ft\.?|featuring)\s+(.+?)\s*$", title, re.IGNORECASE
     )

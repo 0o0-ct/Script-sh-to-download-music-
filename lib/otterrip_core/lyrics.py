@@ -290,6 +290,11 @@ async def _search_cascade(
 
     Uses the local cache first; on miss, queries providers and caches the
     best bundle.
+
+    If the first provider returns only plain (non-synced) lyrics and
+    prefer_synced is True, the remaining providers are still consulted
+    in case they have synced lyrics. The best result across all providers
+    is returned.
     """
     # --- Cache lookup --------------------------------------------------
     if cache is not None:
@@ -315,6 +320,8 @@ async def _search_cascade(
             logger.info("caché HIT: %s - %s", query.artist, query.title)
             return bundle
 
+    best: Optional[LyricsBundle] = None
+
     for provider in providers:
         if stats is not None:
             stats.setdefault(provider.name, {"queries": 0, "found": 0, "errors": 0})
@@ -334,6 +341,7 @@ async def _search_cascade(
         are_results = all(isinstance(r, _LR) for r in results)
         are_bundles = all(isinstance(r, _LB) for r in results)
 
+        current_best: Optional[LyricsBundle] = None
         if are_results:
             result_bundles = [
                 bundle_from_legacy(
@@ -353,98 +361,94 @@ async def _search_cascade(
                 )
                 for r in results
             ]
-            best_bundle = _select_best_bundle(
+            current_best = _select_best_bundle(
                 result_bundles,
                 prefer_synced=prefer_synced,
                 plain_ok=plain_ok,
                 query=query,
                 query_duration_s=query.duration,
             )
-            # Return the original LyricsResult for backward compatibility.
-            best = None
-            if best_bundle is not None:
-                for r in results:
-                    if (
-                        r.provider == best_bundle.provider
-                        and r.title == best_bundle.title
-                        and r.artist == best_bundle.artist
-                    ):
-                        best = r
-                        break
         elif are_bundles:
-            best = _select_best_bundle(
+            current_best = _select_best_bundle(
                 results,
                 prefer_synced=prefer_synced,
                 plain_ok=plain_ok,
                 query=query,
                 query_duration_s=query.duration,
             )
-        else:
-            best = None
 
-        if best is not None:
-            if stats is not None:
-                stats[provider.name]["found"] += 1
-            # --- Cache store -------------------------------------------
-            if cache is not None:
-                # Extract bundle fields regardless of type.
-                if isinstance(best, LyricsBundle):
-                    cache_payload = {
-                        "kind": best.kind,
-                        "lrc": best.lrc,
-                        "plain": best.plain,
-                        "lines": best.lines,
-                        "source": best.source,
-                        "audio_duration_ms": best.audio_duration_ms,
-                        "ref_duration_ms": best.ref_duration_ms,
-                        "offset_ms": best.offset_ms,
-                        "confidence": best.confidence,
-                        "warnings": best.warnings,
-                    }
-                    kind_for_log = best.kind
-                    conf_for_log = best.confidence
-                else:
-                    # Legacy LyricsResult — synthesize bundle fields.
-                    from otterrip_core.lyrics_bundle import bundle_from_legacy
+        if current_best is not None:
+            # If we already have a synced result, skip non-synced from later providers.
+            # If we have plain only and prefer_synced, keep searching for synced.
+            if best is None:
+                best = current_best
+                if stats is not None:
+                    stats[provider.name]["found"] += 1
+            elif prefer_synced and not best.has_sync and current_best.has_sync:
+                # Upgrade: replace plain with synced from this provider
+                if stats is not None:
+                    stats[provider.name]["found"] += 1
+                best = current_best
+            # Otherwise keep the existing best (synced beats plain, higher confidence wins)
 
-                    tmp = bundle_from_legacy(
-                        provider=best.provider,
-                        title=best.title,
-                        artist=best.artist,
-                        album=best.album,
-                        duration_s=best.duration,
-                        sync_level=int(best.sync_level),
-                        plain_text=best.plain_text,
-                        timed_entries=best.timed_entries,
-                        confidence=best.confidence,
-                        source=best.provider,
-                    )
-                    cache_payload = {
-                        "kind": tmp.kind,
-                        "lrc": tmp.lrc,
-                        "plain": tmp.plain,
-                        "lines": tmp.lines,
-                        "source": tmp.source,
-                        "audio_duration_ms": tmp.audio_duration_ms,
-                        "ref_duration_ms": tmp.ref_duration_ms,
-                        "offset_ms": tmp.offset_ms,
-                        "confidence": tmp.confidence,
-                        "warnings": tmp.warnings,
-                    }
-                    kind_for_log = tmp.kind
-                    conf_for_log = tmp.confidence
-                cache.set(
-                    query.artist,
-                    query.title,
-                    cache_payload,
-                    duration_ms=cache_payload["audio_duration_ms"],
+    if best is not None:
+        # --- Cache store -------------------------------------------
+        if cache is not None:
+            # Extract bundle fields regardless of type.
+            if isinstance(best, LyricsBundle):
+                cache_payload = {
+                    "kind": best.kind,
+                    "lrc": best.lrc,
+                    "plain": best.plain,
+                    "lines": best.lines,
+                    "source": best.source,
+                    "audio_duration_ms": best.audio_duration_ms,
+                    "ref_duration_ms": best.ref_duration_ms,
+                    "offset_ms": best.offset_ms,
+                    "confidence": best.confidence,
+                    "warnings": best.warnings,
+                }
+            else:
+                # Legacy LyricsResult — synthesize bundle fields.
+                from otterrip_core.lyrics_bundle import bundle_from_legacy
+
+                tmp = bundle_from_legacy(
+                    provider=best.provider,
+                    title=best.title,
+                    artist=best.artist,
+                    album=best.album,
+                    duration_s=best.duration,
+                    sync_level=int(best.sync_level),
+                    plain_text=best.plain_text,
+                    timed_entries=best.timed_entries,
+                    confidence=best.confidence,
+                    source=best.provider,
                 )
-            logger.info(
-                "letra encontrada: %s - %s | proveedor=%s | kind=%s | conf=%.2f",
-                query.artist, query.title, provider.name,
-                getattr(best, "kind", "unknown"), getattr(best, "confidence", 0.0),
+                cache_payload = {
+                    "kind": tmp.kind,
+                    "lrc": tmp.lrc,
+                    "plain": tmp.plain,
+                    "lines": tmp.lines,
+                    "source": tmp.source,
+                    "audio_duration_ms": tmp.audio_duration_ms,
+                    "ref_duration_ms": tmp.ref_duration_ms,
+                    "offset_ms": tmp.offset_ms,
+                    "confidence": tmp.confidence,
+                    "warnings": tmp.warnings,
+                }
+            cache.set(
+                query.artist,
+                query.title,
+                cache_payload,
+                duration_ms=cache_payload["audio_duration_ms"],
             )
-            return best
+        logger.info(
+            "letra encontrada: %s - %s | kind=%s | conf=%.2f | source=%s",
+            query.artist, query.title,
+            getattr(best, "kind", "unknown"), getattr(best, "confidence", 0.0),
+            getattr(best, "source", "?"),
+        )
+        return best
 
     logger.warning("no se encontraron letras: %s - %s", query.artist, query.title)
     return None

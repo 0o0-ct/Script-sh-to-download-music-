@@ -1,5 +1,16 @@
 # Changelog
 
+## [7.3.3] - 2026-11-13
+
+### Fixed
+
+- **Multi-Web fallback was skipped when LRCLIB returned plain lyrics.** The cascade
+  in `_search_cascade()` returned immediately after the first provider found any
+  result, so Multi-Web was never consulted when LRCLIB returned plain (non-synced)
+  lyrics. Now all providers are queried, and a synced result from a later provider
+  upgrades a plain result from an earlier one. This increases the chance of finding
+  synchronized lyrics even when LRCLIB only has plain text.
+
 ## [7.3.2] - 2026-11-13
 
 ### Fixed

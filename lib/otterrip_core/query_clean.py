@@ -27,14 +27,26 @@ _TITLE_NOISE = (
     r"\[remastered?\s*(?:2\d{3})?\]",
     r"\(live.*?\)",
     r"\[live.*?\]",
+    r"\(en\s+vivo.*?\)",
+    r"\[en\s+vivo.*?\]",
     r"\(acoustic.*?\)",
     r"\[acoustic.*?\]",
+    r"\(ac[úu]stico.*?\)",
+    r"\[ac[úu]stico.*?\]",
     r"\(feat\..*?\)",
     r"\[feat\..*?\]",
     r"\(ft\..*?\)",
     r"\[ft\..*?\]",
     r"\(featuring.*?\)",
     r"\[featuring.*?\]",
+    # YouTube Music appends artist after │ (fullwidth) or | (pipe) separator in title
+    r"\s*[│\uFF5C|]\s*.*$",
+    # Spanish: (Letra) standalone
+    r"\(letra\)",
+    # (En Vivo desde ...)
+    r"\(en\s+vivo\s+desde\s+.*?\)",
+    # (Versión ...)
+    r"\(versi[óo]n\s+.*?\)",
     r"official\s*(?:video|audio|lyric)",
     r"lyrics?\s*video",
     r"\bhd\b",
@@ -83,10 +95,18 @@ def clean_title(title: str) -> str:
 
 
 def clean_artist(artist: str) -> str:
-    """Remove YouTube Music " - Topic" channel suffix and noise."""
+    """Remove YouTube Music " - Topic" channel suffix and noise.
+
+    When multiple artists are comma-separated (e.g. "Un Corazón, Kim Richards,
+    Marco Barrientos"), keep only the first artist.  LRCLIB matching is much
+    more accurate with a single primary artist name.
+    """
     if not artist:
         return artist
     cleaned = _ARTIST_TOPIC_RE.sub("", artist)
+    # Keep only the first artist when comma-separated.
+    if "," in cleaned:
+        cleaned = cleaned.split(",", 1)[0]
     cleaned = _WS_RE.sub(" ", cleaned).strip(" -–—|")
     return cleaned.strip()
 

@@ -1,5 +1,23 @@
 # Changelog
 
+## [7.3.2] - 2026-11-13
+
+### Fixed
+
+- **Lyrics search failed for many tracks with multi-artist metadata.** YouTube Music
+  embeds all artists comma-separated (e.g. "Un Corazón, Kim Richards, Marco Barrientos"),
+  causing LRCLIB lookups to return zero results. `clean_artist()` now keeps only the
+  first artist for the search query, dramatically improving match rates.
+- **Title noise from YouTube Music prevented matches.** Titles like
+  "Forofos ｜ Hakuna Group Music", "DESCALZOS (Letra) ｜ Hakuna ｜ Música Católica",
+  "Jesucristo Basta (En Vivo desde el Auditorio Nacional)", and
+  "Tú en Mí, Yo en Ti (Versión Comunión)" are now cleaned to just the track name.
+  Added regex patterns for `│` (fullwidth pipe), `(Letra)`, `(En Vivo)`,
+  `(Acústico)`, and `(Versión ...)` in Spanish.
+- **LRCLIB fallback: title-only search.** When artist+title search returns nothing,
+  the adapter now retries with title-only to find tracks that LRCLIB stores under
+  a different artist name.
+
 ## [7.3.1] - 2026-11-13
 
 ### Fixed

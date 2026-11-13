@@ -30,7 +30,16 @@ class LrclibProvider(BaseProvider):
         self.user_agent = user_agent
 
     async def search(self, query: SongQuery) -> list[LyricsBundle]:
-        """Search LRCLIB, returning validated LyricsBundle objects."""
+        """Search LRCLIB, returning validated LyricsBundle objects.
+
+        Strategy:
+        1. Exact search (with duration) using full artist + title.
+        2. Broad search (no duration) using full artist + title.
+        3. Fallback: broad search with title only (no artist) — helps when
+           the artist metadata from YouTube Music is too specific (multiple
+           comma-separated artists) and LRCLIB has the track under a different
+           artist name.
+        """
         bundles: list[LyricsBundle] = []
 
         terms = build_query_terms(query.title, query.artist, query.album)
@@ -55,6 +64,17 @@ class LrclibProvider(BaseProvider):
             )
             if broad and (not bundles or broad.source != bundles[0].source):
                 bundles.append(broad)
+
+        # 3) Fallback: title-only search when artist match failed.
+        #    This helps when YouTube Music metadata has multiple artists
+        #    (e.g. "Un Corazón, Kim Richards, Marco Barrientos") but LRCLIB
+        #    has the track under a simpler artist name.
+        if not bundles:
+            title_only = await self._fetch_broad(
+                "", terms["title"], terms["album"], query.isrc
+            )
+            if title_only:
+                bundles.append(title_only)
 
         bundles.sort(key=self._rank_key(query.duration))
         return bundles
@@ -135,12 +155,13 @@ class LrclibProvider(BaseProvider):
         album: str,
         isrc: str,
     ) -> Optional[LyricsBundle]:
-        if not artist or not title:
+        if not title:
             return None
         params: dict[str, str] = {
-            "artist_name": artist,
             "track_name": title,
         }
+        if artist:
+            params["artist_name"] = artist
         if album:
             params["album_name"] = album
         if isrc:

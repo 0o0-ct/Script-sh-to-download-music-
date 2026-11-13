@@ -134,7 +134,7 @@ peligrosas:
 - **4.6** Nuevos flags `--verbose` (muestra los comandos completos de yt-dlp) y
   `--debug` (`set -x`, vuelco del estado interno y conservación de los
   temporales). `log_debug()` y `dump_state()` son los helpers asociados.
-- **4.7** Nueva suite de pruebas BATS `tests/test_otterrip.bats` con **73
+- **4.7** Nueva suite de pruebas BATS `tests/test_otterrip.bats` con **79
   pruebas** que cubren `safe_name`, `resolve_destination`, `normalize_jobs`,
   `is_positive_int`, `apply_quality_choice`, el ciclo `load_config`/
   `save_config`, `build_common_flags`, la caché de dependencias (incluida la
@@ -145,6 +145,56 @@ Corrección adicional detectada durante las pruebas: `declare -A` dentro de una
 función crea una variable **local**, por lo que al sourcear el script desde
 una función los mapas asociativos (`CONFIG_SCHEMA`, `URL_COUNT_CACHE`) se
 perdían. Ahora se declaran con `declare -gA`.
+
+### Corrección crítica: las letras no se incrustaban
+
+**Síntoma:** tras descargar una lista o un álbum, ninguna pista quedaba con
+letras incrustadas (y los metadatos tampoco se reparaban).
+
+**Causa raíz:** el backend busca, en el manifiesto de sesión, el identificador
+de vídeo **dentro del nombre del archivo**:
+
+```python
+for vid_id in session_ids:
+    for af in audio_files:
+        if vid_id in af.name:      # ← espera un ID suelto
+```
+
+pero la plantilla de sesión genera un JSON rico
+(`{"filepath":"…","title":"…","id":"…"}`). Como la línea completa nunca aparece
+dentro del nombre del archivo, `verify-session` no encontraba nada y marcaba
+**todas** las pistas como defectuosas:
+
+```
+Descargados y verificados: 0
+Defectuosos (reintentables): 10
+```
+
+Con `JOB_OK = 0`, `post_process_session()` terminaba antes de tiempo
+(`(( JOB_OK == 0 )) && return 0`) y **nunca se ejecutaba** el paso de letras
+ni el de reparación de metadatos.
+
+**Solución:** nueva función `session_to_ids()`, que normaliza el manifiesto de
+sesión (JSON o ID suelto) a un fichero con un ID por línea antes de invocar al
+backend. Se aplica en `post_process_session()`, de modo que también funcionan
+las sesiones interrumpidas de versiones anteriores.
+
+La corrección se aplica **en la capa Bash**, sin tocar el backend: el paquete
+publicado y su SHA-256 siguen siendo válidos y el arreglo beneficia por igual
+a quien usa el repositorio y a quien descarga solo el `.sh`.
+
+**Resultado tras la corrección** (descarga real de una lista de 19 vídeos):
+
+| | Antes | Después |
+|---|---|---|
+| Descargados y verificados | 0 | 10 |
+| Defectuosos | 10 | 0 |
+| Metadatos reparados | *(omitido)* | 10 |
+| Letras incrustadas | *(omitido)* | 2 (las que existen en LRCLIB) |
+| Estado final | ERROR RECUPERABLE | ÉXITO |
+
+Se han añadido 6 pruebas de regresión (`session_to_ids` y una prueba de
+extremo a extremo contra `verify-session`).
 
 ---
 
@@ -174,7 +224,7 @@ perdían. Ahora se declaran con `declare -gA`.
 |---|---|
 | `bash -n Down-Linux-music_v7.sh` | Sin errores |
 | `shellcheck -x -s bash Down-Linux-music_v7.sh` | **0 errores y 0 avisos** |
-| `bats tests/test_otterrip.bats` | 73/73 pruebas correctas |
+| `bats tests/test_otterrip.bats` | 79/79 pruebas correctas |
 | `PYTHONPATH=lib python3 -m unittest discover -s tests` | 34/34 pruebas correctas |
 | `--version`, `--help`, `--check-deps` | Correctos |
 | Descarga real (YouTube, secuencial y paralela) | Correcta |

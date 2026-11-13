@@ -561,3 +561,57 @@ inyeccion"
     run is_http_url 'ejemplo.com'
     [ "$status" -eq 1 ]
 }
+
+# ── Manifiesto de sesión (formato que espera el backend) ───────
+
+@test "session_to_ids extrae el ID del JSON de sesión" {
+    printf '{"filepath":"/tmp/x/Canción [abc123].m4a","title":"Canción","id":"abc123","duration":12}\n' \
+        > "$TEST_ROOT/sesion.json"
+    run session_to_ids "$TEST_ROOT/sesion.json" "$TEST_ROOT/sesion.ids"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$TEST_ROOT/sesion.ids")" = "abc123" ]
+}
+
+@test "session_to_ids acepta un archivo con IDs sueltos" {
+    printf 'abc123\ndef456\n' > "$TEST_ROOT/sesion_plana.txt"
+    run session_to_ids "$TEST_ROOT/sesion_plana.txt" "$TEST_ROOT/sesion_plana.ids"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$TEST_ROOT/sesion_plana.ids")" = "$(printf 'abc123\ndef456')" ]
+}
+
+@test "session_to_ids deduplica los IDs repetidos" {
+    printf '{"id":"abc123"}\n{"id":"abc123"}\n{"id":"def456"}\n' > "$TEST_ROOT/sesion_dup.json"
+    run session_to_ids "$TEST_ROOT/sesion_dup.json" "$TEST_ROOT/sesion_dup.ids"
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$TEST_ROOT/sesion_dup.ids")" -eq 2 ]
+}
+
+@test "session_to_ids conserva las líneas que no son JSON" {
+    printf 'abc123\nno-es-json\n' > "$TEST_ROOT/sesion_mix.txt"
+    run session_to_ids "$TEST_ROOT/sesion_mix.txt" "$TEST_ROOT/sesion_mix.ids"
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$TEST_ROOT/sesion_mix.ids")" -eq 2 ]
+}
+
+@test "session_to_ids falla si el archivo de origen no existe" {
+    run session_to_ids "$TEST_ROOT/no-existe.json" "$TEST_ROOT/salida.ids"
+    [ "$status" -eq 1 ]
+}
+
+@test "el backend verifica los archivos con el manifiesto normalizado" {
+    # Regresión: con el JSON rico el backend no encontraba ningún archivo y
+    # se descartaban todas las pistas (por eso no se incrustaban las letras).
+    mkdir -p "$TEST_ROOT/dest"
+    ffmpeg -v quiet -f lavfi -i "sine=frequency=440:duration=3" -c:a aac \
+        -metadata title="Pista de prueba" -metadata artist="Artista de prueba" \
+        "$TEST_ROOT/dest/Pista [zz999].m4a" 2>/dev/null || skip "ffmpeg no disponible"
+    printf '{"filepath":"%s","title":"Pista de prueba","id":"zz999","duration":3}\n' \
+        "$TEST_ROOT/dest/Pista [zz999].m4a" > "$TEST_ROOT/sesion_regresion.json"
+    session_to_ids "$TEST_ROOT/sesion_regresion.json" "$TEST_ROOT/sesion_regresion.ids"
+    PYTHONPATH="$BATS_TEST_DIRNAME/../lib" python3 -m otterrip_core verify-session \
+        --session "$TEST_ROOT/sesion_regresion.ids" --ext m4a --dest "$TEST_ROOT/dest" \
+        --archive /dev/null --out-ok "$TEST_ROOT/ok.txt" --out-failed "$TEST_ROOT/fail.txt" \
+        >/dev/null 2>&1 || true
+    [ -s "$TEST_ROOT/ok.txt" ]
+    [ ! -s "$TEST_ROOT/fail.txt" ]
+}

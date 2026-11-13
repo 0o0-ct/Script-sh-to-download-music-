@@ -2058,6 +2058,32 @@ session_dir_has_entries() {
     return 1
 }
 
+# Normaliza un archivo de sesión a otro con un identificador de vídeo por
+# línea. El backend (verify-session) busca el ID DENTRO del nombre del archivo,
+# por lo que necesita la lista plana; la plantilla de sesión genera un JSON
+# rico que hay que reducir. Acepta ambos formatos (JSON o ID suelto) para
+# poder reutilizar sesiones de versiones anteriores.
+session_to_ids() {
+    local src="${1-}" dst="${2-}"
+    [[ -n "$src" && -n "$dst" && -f "$src" ]] || return 1
+    awk '
+        {
+            line = $0
+            sub(/\r$/, "", line)
+            if (line ~ /^\{/) {
+                if (match(line, /"id"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
+                    id = substr(line, RSTART, RLENGTH)
+                    sub(/^.*"id"[[:space:]]*:[[:space:]]*"/, "", id)
+                    sub(/"$/, "", id)
+                    if (id != "") { print id; next }
+                }
+            }
+            if (line != "") print line
+        }
+    ' "$src" 2>/dev/null | LC_ALL=C sort -u > "$dst" 2>/dev/null || return 1
+    return 0
+}
+
 # Bloqueo por carpeta de destino: evita dos instancias escribiendo el mismo
 # archivo de historial. Si flock no existe se usa un bloqueo atómico por
 # directorio (mkdir), nunca se deja el destino desprotegido.
@@ -3042,7 +3068,14 @@ post_process_session() {
     fi
 
     echo -e "  ${YELLOW}⚙${NC} Verificando integridad de ${JOB_NEW} archivo(s)..."
-    py_core verify-session --session "$session_final" --ext "$AFMT" --dest "$dest" \
+    # El backend espera un ID por línea: se normaliza el manifiesto de sesión.
+    # Ojo: el nombre NO empieza por "session." para no confundirse con los
+    # manifiestos de sesión (glob "session.*" del recovery).
+    local ids_file="$workdir/manifest.ids"
+    if ! session_to_ids "$session_final" "$ids_file"; then
+        ids_file="$session_final"
+    fi
+    py_core verify-session --session "$ids_file" --ext "$AFMT" --dest "$dest" \
         --archive "$archive" --out-ok "$verified" --out-failed "$failed" || vrc=$?
     JOB_VERIFY_FAILED="$(count_lines "$failed")"
     JOB_OK="$(count_lines "$verified")"

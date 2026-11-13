@@ -165,28 +165,38 @@ def _embed_lyrics(audio, result: LyricsResult, mode: str = "embed") -> bool:
                 audio.tags.add(USLT(encoding=3, lang="eng", text=plain))
 
         elif isinstance(audio, FLAC):
-            plain = result.plain_text or "\n".join(t for _, t in result.timed_entries)
-            if plain:
-                audio["LYRICS"] = plain.split("\n")
-            # La letra sincronizada se guarda aparte (SYNCEDLYRICS) con las
-            # marcas de tiempo: sin esto el FLAC solo conservaría el texto.
             if result.has_sync and result.timed_entries:
-                audio["SYNCEDLYRICS"] = [_format_lrc(result.timed_entries)]
+                # Cuando existe letra sincronizada, escribimos el contenido
+                # con timestamps LRC directamente en la etiqueta estándar
+                # LYRICS — así los reproductores que solo leen LYRICS pueden
+                # mostrar la letra sincronizada. Se mantiene SYNCEDLYRICS
+                # por compatibilidad con reproductores que lo soportan.
+                lrc_text = _format_lrc(result.timed_entries)
+                audio["LYRICS"] = lrc_text.split("\n")
+                audio["SYNCEDLYRICS"] = [lrc_text]
+            else:
+                plain = result.plain_text or "\n".join(t for _, t in result.timed_entries)
+                if plain:
+                    audio["LYRICS"] = plain.split("\n")
 
         elif isinstance(audio, MP4):
-            plain = result.plain_text or "\n".join(t for _, t in result.timed_entries)
-            if plain:
-                audio.tags["\xa9lyr"] = [plain]
-            # La letra sincronizada va en el átomo libre de iTunes: sin esto
-            # el M4A solo conservaría el texto plano.
             if result.has_sync and result.timed_entries:
+                # Cuando existe letra sincronizada, escribimos el contenido
+                # completo con timestamps LRC directamente en el átomo
+                # estándar ©lyr — así los reproductores que solo leen ©lyr
+                # pueden mostrar la letra sincronizada. Se mantiene el átomo
+                # libre de iTunes por compatibilidad con Apple Music/iTunes.
+                lrc_text = _format_lrc(result.timed_entries)
+                audio.tags["\xa9lyr"] = [lrc_text]
                 try:
                     audio.tags.pop(ITUNES_SYNCED_ATOM, None)
                 except Exception:
                     pass
-                audio.tags[ITUNES_SYNCED_ATOM] = [
-                    _format_lrc(result.timed_entries).encode("utf-8")
-                ]
+                audio.tags[ITUNES_SYNCED_ATOM] = [lrc_text.encode("utf-8")]
+            else:
+                plain = result.plain_text or "\n".join(t for _, t in result.timed_entries)
+                if plain:
+                    audio.tags["\xa9lyr"] = [plain]
 
         audio.save()
         return True
@@ -554,7 +564,19 @@ async def _process_file(
 
     if mode == "embed":
         if _embed_lyrics(audio, best, mode):
-            print(f"  ✔ {fpath.name} — letra {sync_label} ({best.provider})")
+            # Generar archivo .lrc externo como respaldo universal para
+            # reproductores estrictos que no leen metadatos sincronizados.
+            if best.has_sync and best.timed_entries:
+                lrc_path = fpath.with_suffix(".lrc")
+                try:
+                    lrc_path.write_text(
+                        _format_lrc(best.timed_entries), encoding="utf-8"
+                    )
+                    print(f"  ✔ {fpath.name} — letra {sync_label} + {lrc_path.name} ({best.provider})")
+                except Exception:
+                    print(f"  ✔ {fpath.name} — letra {sync_label} ({best.provider})")
+            else:
+                print(f"  ✔ {fpath.name} — letra {sync_label} ({best.provider})")
         else:
             print(f"  ⚠ {fpath.name} — error al incrustar")
             return "notfound"

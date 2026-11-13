@@ -1223,6 +1223,8 @@ pkg_names_for() {
         apk:python-venv) printf 'python3 py3-pip' ;;
         *:python3) printf 'python3' ;;
         *:ffmpeg) printf 'ffmpeg' ;;
+        *:shellcheck) printf 'shellcheck' ;;
+        *:bats) printf 'bats' ;;
         *) printf '%s' "$logical" ;;
     esac
 }
@@ -1679,10 +1681,95 @@ install_deps() {
     # Avisos (yt-dlp antiguo, etc.) detectados por el diagnóstico
     py_core doctor 2>/dev/null | awk '/^  !/ { p=1; print; next } /^      →/ { if (p) print; next } { p=0 }' || true
 
+    # ── Herramientas recomendadas para desarrollo ─────────────────
+    check_dev_tools
+
     echo -e "\n${GREEN}${BOLD}  Dependencias listas.${NC}\n"
     log_event INFO "dependencias OK (python=$PYBIN yt-dlp=$YTDLP_BIN)"
     write_deps_cache
     sleep 0.6
+}
+
+# Verifica las herramientas de desarrollo recomendadas y ofrece instalarlas.
+# No bloquea la ejecución: solo muestra avisos informativos.
+# @brief Verifica herramientas de desarrollo recomendadas (shellcheck, bats).
+# @param $1 (no usado)
+# @return 0 siempre (no bloqueante).
+# @side-effects Muestra avisos y ofrece instalar herramientas faltantes.
+check_dev_tools() {
+    [[ -t 1 ]] || return 0
+    local -a missing=()
+    local -a found=()
+
+    # ShellCheck: análisis estático de scripts Bash
+    if command -v shellcheck >/dev/null 2>&1; then
+        found+=("shellcheck")
+    else
+        missing+=("shellcheck")
+    fi
+
+    # Bats: framework de pruebas para scripts Bash
+    if command -v bats >/dev/null 2>&1; then
+        found+=("bats")
+    else
+        missing+=("bats")
+    fi
+
+    # Pytest: framework de pruebas para Python (complementa unittest)
+    if "$PYBIN" -m pytest --version >/dev/null 2>&1; then
+        found+=("pytest")
+    else
+        missing+=("pytest")
+    fi
+
+    ((${#missing[@]} == 0)) && return 0
+
+    echo -e "\n${BOLD}${CYAN}══ Herramientas de desarrollo recomendadas ══${NC}\n"
+
+    local tool="" hint=""
+    for tool in "${missing[@]}"; do
+        case "$tool" in
+            shellcheck)
+                echo "  ${YELLOW}⚠${NC} shellcheck — análisis estático de scripts Bash"
+                echo "    Instala con: $(install_hint_for shellcheck)"
+                echo "    O desde fuente: https://github.com/koalaman/shellcheck"
+                ;;
+            bats)
+                echo "  ${YELLOW}⚠${NC} bats — framework de pruebas para scripts Bash"
+                echo "    Instala con: $(install_hint_for bats)"
+                echo "    O desde fuente: https://github.com/bats-core/bats-core"
+                ;;
+            pytest)
+                echo "  ${YELLOW}⚠${NC} pytest — framework de pruebas para Python"
+                echo "    Instala con: $PYBIN -m pip install --user pytest"
+                ;;
+        esac
+    done
+
+    if confirm "¿Instalar las herramientas de desarrollo faltantes ahora?"; then
+        local tool=""
+        for tool in "${missing[@]}"; do
+            case "$tool" in
+                pytest)
+                    echo "  Instalando pytest..."
+                    "$PYBIN" -m pip install --user pytest 2>/dev/null ||
+                        echo "  ${RED}✘${NC} Falló al instalar pytest. Usa: $PYBIN -m pip install --user pytest"
+                    ;;
+                *)
+                    echo "  Instalando $tool..."
+                    pkg_install "$(pkg_names_for "$(detect_pkg_manager 2>/dev/null || true)" "$tool")" ||
+                        echo "  ${RED}✘${NC} Falló al instalar $tool. Usa: $(install_hint_for "$tool")"
+                    ;;
+            esac
+        done
+    fi
+
+    if ((${#found[@]})); then
+        echo -e "\n  ${GREEN}✔${NC} Herramientas disponibles: $(IFS=', '; echo "${found[*]}")"
+    fi
+
+    echo ""
+    return 0
 }
 
 # ═══════════════════════════════════════════════════════════════

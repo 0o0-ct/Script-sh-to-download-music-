@@ -49,6 +49,9 @@ _ARTIST_TOPIC_RE = re.compile(r"\s*-\s*Topic\s*$", re.IGNORECASE)
 # Multiple whitespace.
 _WS_RE = re.compile(r"\s+")
 
+# Parenthesised feat./ft. pattern.
+_FEAT_PAREN_RE = re.compile(r"\s*\([^)]*\b(?:feat\.?|ft\.?|featuring)\b.*?\)\s*$", re.IGNORECASE)
+
 
 def normalize_unicode(value: str) -> str:
     """NFKD-normalise, strip combining marks, lowercase."""
@@ -90,10 +93,21 @@ def clean_artist(artist: str) -> str:
 def split_feat(title: str) -> tuple[str, str | None]:
     """Split ``feat.`` / ``ft.`` artists out of a title.
 
+    Handles ``(feat. ...)`` and ``(ft. ...)`` parenthetical forms.
     Returns ``(clean_title, feat_artist)``.
     """
     if not title:
         return title, None
+    # Try parenthetical form first.
+    m = _FEAT_PAREN_RE.search(title)
+    if m:
+        inner = m.group(0)
+        feat_match = re.search(
+            r"\b(?:feat\.?|ft\.?|featuring)\s+(.+?)\s*\)", inner, re.IGNORECASE
+        )
+        if feat_match:
+            return title[: m.start()].strip(), feat_match.group(1).strip()
+    # Fallback to standard form.
     m = re.search(
         r"\s+(?:feat\.?|ft\.?|featuring)\s+(.+?)\s*$", title, re.IGNORECASE
     )

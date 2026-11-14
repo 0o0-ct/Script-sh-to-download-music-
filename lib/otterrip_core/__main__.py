@@ -11,6 +11,7 @@ Available subcommands:
 import sys
 import argparse
 
+from otterrip_core import detect_url
 from otterrip_core import doctor
 from otterrip_core import fix_metadata
 from otterrip_core import lyrics
@@ -41,6 +42,16 @@ def build_parser() -> argparse.ArgumentParser:
         description="OtterRip Python backend",
     )
     sub = parser.add_subparsers(dest="command")
+
+    # --- detect-url ---
+    p = sub.add_parser("detect-url", help="Classify a YouTube URL")
+    p.add_argument("url", help="URL to classify")
+    p.add_argument("--ytdlp", default="", help="Path to yt-dlp binary")
+    p.add_argument("--js-args", default="", help="JS runtime args")
+    p.add_argument("--cookies-file", default="")
+    p.add_argument("--cookies-browser", default="")
+    p.add_argument("--no-playlist", action="store_true")
+    p.add_argument("--timeout", type=int, default=50)
 
     # --- doctor ---
     p = sub.add_parser("doctor", help="System diagnostics")
@@ -183,6 +194,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 COMMAND_MAP = {
+    "detect-url": detect_url.run_detect_url,
     "doctor": doctor.run_doctor,
     "fix-metadata": fix_metadata.run_fix_metadata,
     "lyrics": lyrics.run_lyrics,

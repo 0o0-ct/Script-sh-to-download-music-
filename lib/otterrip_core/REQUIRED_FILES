@@ -6,6 +6,7 @@ adapters/lrclib.py
 adapters/multiweb.py
 classify_log.py
 convert.py
+detect_url.py
 enhanced_lrc.py
 doctor.py
 fix_metadata.py

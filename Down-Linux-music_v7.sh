@@ -29,6 +29,7 @@ readonly URL_COUNT_TTL=300              # Validez de la caché de conteo de play
 readonly DETECT_TIMEOUT=65              # Límite global de detección de URL (s)
 readonly DETECT_PY_TIMEOUT=50           # Límite interno del subprocess de detección (s)
 readonly PROGRESS_POLL_INTERVAL=2       # Segundos entre sondeos del progreso paralelo
+readonly YTDLP_MIN_VERSION="2024.02.01" # Versión mínima de yt-dlp (YouTube cambia frecuentemente)
 
 # SIGPIPE ignorado: así un pipe cerrado (p. ej. `| head -1`) no mata el script
 # de forma silenciosa ni deja procesos huérfanos a medias.
@@ -50,7 +51,7 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
 LIB_DIR="$SCRIPT_DIR/lib"
 REQUIREMENTS_FILE="$SCRIPT_DIR/requirements.txt"
-BACKEND_SHA256="46dbc55a799552b5340aef38a390a457db7ed15d81df872a6225fe5539662adf"
+BACKEND_SHA256="4b7ff70ff25b117d50426b847ef20d327a5823849218b81ab82712181398385a"
 BACKEND_ARCHIVE_URL="https://raw.githubusercontent.com/0o0-ct/Script-sh-to-download-music-/v${OTTERRIP_VERSION}/packages/otterrip-backend-v${OTTERRIP_VERSION}.tar.gz"
 
 # ── Directorios XDG (los valores relativos se ignoran, según la especificación)
@@ -1422,6 +1423,15 @@ ensure_ytdlp() {
         echo "    Si es un binario antiguo, actualízalo o reinstálalo desde el menú de diagnóstico."
         return 1
     fi
+    # Validar versión mínima
+    local ytv_clean=""
+    ytv_clean="$(printf '%s' "$ytv" | grep -oE '[0-9]{4}\.[0-9]{2}\.[0-9]{2}' | head -n1 || true)"
+    if [[ -n "$ytv_clean" ]] && version_gt "$YTDLP_MIN_VERSION" "$ytv_clean"; then
+        echo "  ${RED}✘${NC} yt-dlp $ytv es demasiado antiguo (mínimo: $YTDLP_MIN_VERSION)."
+        echo "    Actualiza desde el menú de diagnóstico (Diagnóstico → 2) o ejecuta:"
+        echo "    pip install --user --upgrade 'yt-dlp[default]'"
+        return 1
+    fi
     echo "  ${GREEN}✔${NC} yt-dlp $ytv"
     return 0
 }
@@ -1791,12 +1801,6 @@ DETECTED_TITLE=""
 DETECTED_COUNT="1"
 DETECTION_FALLBACK=false
 
-# Módulo de detección en Python (tools/detect_url.py). Está fuera de lib/ a
-# propósito: lib/ es el contenido del paquete del backend y su digest está
-# fijado por versión. Si el módulo no existe, se usa el heredoc de respaldo
-# que hay al final de detect_url_type().
-DETECT_SCRIPT="$SCRIPT_DIR/tools/detect_url.py"
-
 # Ejecuta un comando con límite de tiempo. Devuelve 124 si se agota.
 # Usa `timeout` del sistema; si no existe, un vigilante en segundo plano.
 run_with_timeout() {
@@ -1833,12 +1837,14 @@ run_with_timeout() {
 }
 
 # Detecta si la URL es canción, playlist o álbum.
-# Rellena DETECTED_TYPE, DETECTED_COUNT, DETECTED_TITLE y DETECTION_FALLBACK.
+# Delega en el módulo Python lib/otterrip_core/detect_url.py (única fuente
+# de verdad).  Rellena DETECTED_TYPE, DETECTED_COUNT, DETECTED_TITLE y
+# DETECTION_FALLBACK.
 # @brief Detecta si una URL es canción, playlist o álbum.
 # @param $1 URL a analizar.
 # @return 0 siempre; rellena DETECTED_TYPE, DETECTED_COUNT, DETECTED_TITLE y
 #         DETECTION_FALLBACK.
-# @side-effects Consulta yt-dlp (con límite de tiempo) y hace una petición HTTP.
+# @side-effects Consulta yt-dlp (con límite de tiempo) a través del backend.
 detect_url_type() {
     local url="${1-}" lower="${1,,}" no_playlist=0
     local -a lines=()
@@ -1860,140 +1866,17 @@ detect_url_type() {
         no_playlist=1
     fi
 
-    # ── Módulo externo (preferido) ──────────────────────────────
-    if [[ -f "$DETECT_SCRIPT" && -r "$DETECT_SCRIPT" ]]; then
-        local -a det_cmd=("$DETECT_SCRIPT" --url "$url" --timeout "$DETECT_PY_TIMEOUT")
-        (( no_playlist == 1 )) && det_cmd+=(--no-playlist)
-        [[ -n "${YTDLP_BIN:-}" ]] && det_cmd+=(--ytdlp "$YTDLP_BIN")
-        [[ -n "${JS_RUNTIME_ARGS[*]:-}" ]] && det_cmd+=(--js-args "${JS_RUNTIME_ARGS[*]}")
-        [[ -n "${COOKIES_FILE:-}" ]] && det_cmd+=(--cookies-file "$COOKIES_FILE")
-        [[ -n "${COOKIES_BROWSER:-}" ]] && det_cmd+=(--cookies-browser "$COOKIES_BROWSER")
-        raw="$(run_with_timeout "$DETECT_TIMEOUT" "${PYBIN:-python3}" "${det_cmd[@]}" 2>/dev/null)" || rc=$?
-    else
-        # ── Respaldo: Python embebido ───────────────────────────
-        local DETECT_URL="$url" DETECT_NO_PLAYLIST="$no_playlist"
-        local DETECT_JS_ARGS="${JS_RUNTIME_ARGS[*]:-}"
-        local DETECT_COOKIES_FILE="${COOKIES_FILE:-}" DETECT_COOKIES_BROWSER="${COOKIES_BROWSER:-}"
-        export DETECT_URL DETECT_NO_PLAYLIST DETECT_JS_ARGS DETECT_COOKIES_FILE DETECT_COOKIES_BROWSER
-        raw="$(run_with_timeout "$DETECT_TIMEOUT" "${PYBIN:-python3}" - <<'PYEOF' 2>/dev/null
-import json, os, re, subprocess, sys
+    # ── Delegar al backend Python (única fuente de verdad) ──────
+    local -a det_args=(detect-url "$url" --timeout "$DETECT_PY_TIMEOUT")
+    (( no_playlist == 1 )) && det_args+=(--no-playlist)
+    [[ -n "${YTDLP_BIN:-}" ]] && det_args+=(--ytdlp "$YTDLP_BIN")
+    [[ -n "${JS_RUNTIME_ARGS[*]:-}" ]] && det_args+=(--js-args "${JS_RUNTIME_ARGS[*]}")
+    [[ -n "${COOKIES_FILE:-}" ]] && det_args+=(--cookies-file "$COOKIES_FILE")
+    [[ -n "${COOKIES_BROWSER:-}" ]] && det_args+=(--cookies-browser "$COOKIES_BROWSER")
 
-url = os.environ.get("DETECT_URL", "")
-no_playlist = os.environ.get("DETECT_NO_PLAYLIST", "0") == "1"
-ytdlp_bin = os.environ.get("YTDLP_BIN", "").strip()
-js_args = [a for a in os.environ.get("DETECT_JS_ARGS", "").split() if a]
-cookies_file = os.environ.get("DETECT_COOKIES_FILE", "").strip()
-cookies_browser = os.environ.get("DETECT_COOKIES_BROWSER", "").strip()
+    raw="$(run_with_timeout "$DETECT_TIMEOUT" py_core "${det_args[@]}" 2>/dev/null)" || rc=$?
 
-def url_hint(value: str) -> str:
-    u = value.lower()
-    album = "/album/" in u or "/albums/" in u or "olak5uy_" in u
-    collection = album or "/playlist" in u or "/sets/" in u or "list=" in u
-    if no_playlist and "/watch" in u:
-        collection = False
-    return "album" if album else ("playlist" if collection else "song")
-
-def clean(value: str) -> str:
-    value = re.sub(r"[\x00-\x1f\x7f]+", " ", value or "")
-    return re.sub(r"\s+", " ", value).strip()
-
-def decode_field(value: str) -> str:
-    value = (value or "").strip()
-    if not value or value == "NA":
-        return ""
-    try:
-        obj = json.loads(value)
-    except Exception:
-        return value
-    if obj is None:
-        return ""
-    return str(obj)
-
-def print_fallback() -> None:
-    kind = url_hint(url)
-    print(kind)
-    print("1" if kind == "song" else "")
-    print("")
-    print("fallback")
-
-fields = [
-    "playlist_count", "playlist_title", "album", "title",
-    "webpage_url_domain", "playlist_id", "webpage_url", "_type",
-]
-template = "\x1f".join(f"%({name})j" for name in fields)
-base = [ytdlp_bin] if ytdlp_bin else [sys.executable, "-m", "yt_dlp"]
-
-def try_run(flat: bool):
-    args = base + [
-        "--playlist-items", "1",
-        "--skip-download", "--no-warnings", "--ignore-errors",
-        "--socket-timeout", "20",
-        "--print", template,
-    ]
-    args.extend(js_args)
-    if cookies_file and os.path.isfile(cookies_file) and os.access(cookies_file, os.R_OK):
-        args.extend(["--cookies", cookies_file])
-    elif cookies_browser:
-        args.extend(["--cookies-from-browser", cookies_browser])
-    if flat:
-        args.insert(len(base), "--flat-playlist")
-    if no_playlist:
-        args.append("--no-playlist")
-    # "--" evita que la URL se interprete como una opción de yt-dlp.
-    args.append("--")
-    args.append(url)
-    try:
-        proc = subprocess.run(
-            args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            text=True, encoding="utf-8", errors="replace", timeout=50,
-        )
-    except Exception:
-        return ""
-    for line in (proc.stdout or "").splitlines():
-        if line.count("\x1f") >= len(fields) - 1:
-            return line
-    return ""
-
-line = try_run(True) or try_run(False)
-if not line:
-    print_fallback()
-    raise SystemExit(0)
-
-parts = line.split("\x1f")
-while len(parts) < len(fields):
-    parts.append("")
-vals = [decode_field(p) for p in parts[:len(fields)]]
-
-raw_count = vals[0]
-count = int(raw_count) if raw_count.isdigit() else 0
-ptitle, album, title, domain, pid, page, typ = vals[1], vals[2], vals[3], vals[4], vals[5], vals[6], vals[7]
-url_l = url.lower()
-page_l = page.lower()
-
-pure_collection = any(x in url_l for x in ("/playlist", "/sets/", "/album/", "/albums/"))
-collection = bool(ptitle or pid) or count > 1 or pure_collection
-if no_playlist and not pure_collection:
-    collection = False
-
-album_flag = (
-    "/album/" in page_l or "/albums/" in page_l
-    or "/album/" in url_l or "/albums/" in url_l
-    or ("music.youtube.com" in domain.lower() and pid.startswith("OLAK5uy_"))
-    or (album and ptitle and album.casefold().strip() == ptitle.casefold().strip())
-)
-
-kind = "album" if (collection and album_flag) else ("playlist" if collection else "song")
-out_title = (ptitle or album or title) if collection else title
-out_count = (count if count > 0 else "") if collection else 1
-print(kind)
-print(out_count)
-print(clean(out_title))
-print("ok")
-PYEOF
-        )" || rc=$?
-    fi
-
-    # Tiempo agotado (124) o fallo: se recurre a la detección por URL.
+    # Tiempo agotado (124) o fallo: se recurre a la detección por patrón URL.
     if (( rc != 0 )) || [[ -z "$raw" ]]; then
         DETECTION_FALLBACK=true
     else
@@ -2009,7 +1892,8 @@ PYEOF
         esac
         DETECTED_COUNT="$(trim_input "${lines[1]}")"
         DETECTED_TITLE="$(trim_input "${lines[2]}")"
-        if [[ "${lines[3]:-ok}" == "fallback" ]]; then
+        # source: "yt-dlp", "fallback", "error"
+        if [[ "${lines[3]:-yt-dlp}" != "yt-dlp" ]]; then
             DETECTION_FALLBACK=true
         fi
     else
@@ -4186,7 +4070,19 @@ menu_diagnostics() {
                         venv_pip_install "yt-dlp[default]" || true
                         YTDLP_BIN="$(find_ytdlp)"
                         export YTDLP_BIN
-                        echo "  yt-dlp: $(ytdlp --version 2>/dev/null || echo 'desconocido')"
+                        local new_ver=""
+                        new_ver="$(ytdlp --version 2>/dev/null | head -n1 || true)"
+                        echo "  yt-dlp: $new_ver"
+                        # Verificar versión mínima tras actualizar
+                        local new_clean=""
+                        new_clean="$(printf '%s' "$new_ver" | grep -oE '[0-9]{4}\.[0-9]{2}\.[0-9]{2}' | head -n1 || true)"
+                        if [[ -n "$new_clean" ]] && version_gt "$YTDLP_MIN_VERSION" "$new_clean"; then
+                            echo -e "  ${YELLOW}!${NC} La versión $new_clean sigue por debajo del mínimo ($YTDLP_MIN_VERSION)."
+                        else
+                            echo -e "  ${GREEN}✔${NC} Versión $new_clean OK (mínimo: $YTDLP_MIN_VERSION)."
+                        fi
+                    else
+                        echo -e "  ${YELLOW}!${NC} No se pudo acceder al venv. Reinstala las dependencias (opción 3)."
                     fi
                 fi
                 pause_enter

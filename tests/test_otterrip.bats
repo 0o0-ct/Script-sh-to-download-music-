@@ -644,3 +644,90 @@ inyeccion"
     [ "$status" -eq 0 ]
     [ "$(summary_value "$TEST_ROOT/sum-off.txt" found 0)" = "0" ]
 }
+
+# ── Detección de URL (fallback sin red) ─────────────────────────
+
+@test "detect_url_type con URL de álbum de YouTube Music (fallback)" {
+    # Sin backend real, la detección cae en el fallback por patrón URL.
+    detect_url_type "https://music.youtube.com/album/OLAK5uy_abc"
+    [ "$DETECTED_TYPE" = "album" ]
+    [ "$DETECTION_FALLBACK" = "true" ]
+}
+
+@test "detect_url_type con URL de playlist de YouTube (fallback)" {
+    detect_url_type "https://www.youtube.com/playlist?list=PLxxx"
+    [ "$DETECTED_TYPE" = "playlist" ]
+    [ "$DETECTION_FALLBACK" = "true" ]
+}
+
+@test "detect_url_type con URL de canción individual (fallback)" {
+    detect_url_type "https://www.youtube.com/watch?v=abc123"
+    [ "$DETECTED_TYPE" = "song" ]
+    [ "$DETECTED_COUNT" = "1" ]
+}
+
+@test "detect_url_type con URL de YouTube Music watch (fallback)" {
+    detect_url_type "https://music.youtube.com/watch?v=abc123"
+    [ "$DETECTED_TYPE" = "song" ]
+}
+
+@test "detect_url_type con URL insegura devuelve fallback" {
+    detect_url_type "--exec=malicioso"
+    [ "$DETECTED_TYPE" = "song" ]
+    [ "$DETECTION_FALLBACK" = "true" ]
+}
+
+# ── Validación de versión de yt-dlp ─────────────────────────────
+
+@test "YTDLP_MIN_VERSION está definido" {
+    [ -n "$YTDLP_MIN_VERSION" ]
+    [[ "$YTDLP_MIN_VERSION" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}$ ]]
+}
+
+@test "version_gt detecta versión de yt-dlp antigua" {
+    # 2024.02.01 > 2023.10.01 → versión antigua
+    run version_gt "$YTDLP_MIN_VERSION" "2023.10.01"
+    [ "$status" -eq 0 ]
+}
+
+@test "version_gt acepta versión de yt-dlp reciente" {
+    # 2024.02.01 no es > 2025.01.01 → versión OK
+    run version_gt "$YTDLP_MIN_VERSION" "2025.01.01"
+    [ "$status" -eq 1 ]
+}
+
+@test "version_gt con versión igual devuelve 1" {
+    run version_gt "$YTDLP_MIN_VERSION" "$YTDLP_MIN_VERSION"
+    [ "$status" -eq 1 ]
+}
+
+# ── Parseo de opciones rápidas ──────────────────────────────────
+
+@test "apply_quality_choice con perfil 1 (MP3)" {
+    run apply_quality_choice '1'
+    [ "$status" -eq 0 ]
+    [ "$AFMT" = "mp3" ]
+}
+
+@test "apply_quality_choice con perfil 2 (M4A)" {
+    run apply_quality_choice '2'
+    [ "$status" -eq 0 ]
+    [ "$AFMT" = "m4a" ]
+}
+
+@test "normalize_proxy con proxy socks5" {
+    run normalize_proxy 'socks5h://user:pass@proxy.example.com:1080'
+    [ "$status" -eq 0 ]
+}
+
+@test "is_http_url acepta http y https" {
+    run is_http_url 'http://ejemplo.com/video'
+    [ "$status" -eq 0 ]
+    run is_http_url 'https://ejemplo.com/video'
+    [ "$status" -eq 0 ]
+}
+
+@test "is_http_url rechaza texto sin esquema" {
+    run is_http_url 'solo texto'
+    [ "$status" -eq 1 ]
+}

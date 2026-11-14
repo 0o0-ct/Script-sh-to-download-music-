@@ -33,10 +33,38 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run ShellCheck
-        uses: ludeeus/action-shellcheck@master
+        uses: ludeeus/action-shellcheck@2.0.0
         with:
           check_together: true
           format: tty
           shellcheck_version: stable
         env:
           SHELLCHECK_OPTS: "-e SC1091,SC2039,SC2129"
+
+  bats:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bats
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats
+
+      - name: Install ffmpeg (for audio test fixtures)
+        run: |
+          sudo apt-get install -y ffmpeg
+
+      - name: Run Bats tests
+        run: |
+          bats tests/test_otterrip.bats
+
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run actionlint
+        uses: rhysd/actionlint@v1
+        with:
+          shellcheck: false

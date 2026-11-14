@@ -68,3 +68,71 @@ jobs:
         uses: rhysd/actionlint@v1
         with:
           shellcheck: false
+
+  backend-remote-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract backend version and SHA from launcher
+        id: info
+        run: |
+          version="$(grep -m1 '^OTTERRIP_VERSION=' Down-Linux-music_v7.sh | cut -d'"' -f2)"
+          sha="$(grep -m1 '^BACKEND_SHA256=' Down-Linux-music_v7.sh | cut -d'"' -f2)"
+          archive="otterrip-backend-v${version}.tar.gz"
+          url="https://raw.githubusercontent.com/0o0-ct/Script-sh-to-download-music-/v${version}/packages/${archive}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "archive=${archive}" >> "$GITHUB_OUTPUT"
+          echo "url=${url}" >> "$GITHUB_OUTPUT"
+
+      - name: Check remote release tag exists
+        id: tag
+        run: |
+          version="${{ steps.info.outputs.version }}"
+          status="$(curl -sI --max-time 10 --retry 2 --proto '=https' --proto-redir '=https' \
+            -o /dev/null -w '%{http_code}' \
+            "https://github.com/0o0-ct/Script-sh-to-download-music-/releases/tag/v${version}" 2>/dev/null || true)"
+          if [[ "$status" == "200" ]]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip if release tag does not exist yet
+        if: steps.tag.outputs.exists == 'false'
+        run: |
+          echo "::warning::Release tag v${{ steps.info.outputs.version }} does not exist yet — skipping remote backend verification."
+          echo "This is expected during PR preparation. The check will run once the tag is published."
+
+      - name: Download and verify remote backend archive
+        if: steps.tag.outputs.exists == 'true'
+        run: |
+          url="${{ steps.info.outputs.url }}"
+          expected_sha="${{ steps.info.outputs.sha }}"
+          local_sha="$(sha256sum packages/${{ steps.info.outputs.archive }} | awk '{print $1}')"
+
+          # Download remote archive
+          curl -fL --max-time 30 --retry 2 --proto '=https' --proto-redir '=https' \
+            -o "/tmp/${{ steps.info.outputs.archive }}" \
+            "$url" || {
+            echo "::error::Failed to download remote backend archive from: $url"
+            exit 1
+          }
+
+          # Verify remote SHA matches launcher
+          remote_sha="$(sha256sum "/tmp/${{ steps.info.outputs.archive }}" | awk '{print $1}')"
+          if [[ "$remote_sha" != "$expected_sha" ]]; then
+            echo "::error::Remote SHA256 mismatch: expected $expected_sha, got $remote_sha"
+            exit 1
+          fi
+
+          # Verify remote SHA matches local package
+          if [[ "$remote_sha" != "$local_sha" ]]; then
+            echo "::error::Remote package differs from local package"
+            echo "  Remote SHA: $remote_sha"
+            echo "  Local SHA:  $local_sha"
+            exit 1
+          fi
+
+          echo "Remote backend archive verified: SHA256 $remote_sha matches launcher and local package."

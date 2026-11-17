@@ -2286,6 +2286,65 @@ album_layout_label() {
     fi
 }
 
+# ═══════════════════════════════════════════════════════════════
+#  RESTABLECER VALORES PREDETERMINADOS
+# ═══════════════════════════════════════════════════════════════
+# Restaura toda la configuración a los valores originales del programa.
+# Asegura que las letras siempre se incrusten en la pista de audio
+# y estén sincronizadas según la duración de la canción.
+menu_reset_defaults() {
+    clear_screen
+    echo -e "${BOLD}${CYAN}══ Restablecer valores predeterminados ══${NC}\n"
+    echo -e "  Esto restaurará todas las configuraciones a los valores originales."
+    echo -e "  Se asegurarán los siguientes puntos clave:\n"
+    echo -e "    · Letras siempre activadas (FETCH_LYRICS=true)"
+    echo -e "    · Letras incrustadas en la pista de audio (LYRICS_MODE=embed)"
+    echo -e "    · Letras sincronizadas según duración (LYRICS_PREFER_SYNCED=true)"
+    echo -e "    · Nivel de sincronización: línea (LYRICS_SYNC_LEVEL=line)"
+    echo -e "    · Estilo de inserción: LRC (LYRICS_EMBED_STYLE=lrc)\n"
+    read -rp "  ¿Continuar? (s/N): " confirm || return 0
+    [[ "${confirm,,}" == "s" ]] || { echo -e "  ${YELLOW}Cancelado.${NC}"; sleep 1; return 0; }
+
+    # Restaurar calidad por defecto (MP3 320 kbps)
+    apply_quality_choice "1"
+
+    # Restaurar todos los valores del esquema de configuración a sus defaults
+    QUALITY_CHOICE="1"
+    DUR_MIN="60"
+    DUR_MAX="480"
+    PARALLEL_JOBS="3"
+    ALBUM_LAYOUT="single"
+    FETCH_LYRICS="true"
+    LYRICS_MODE="embed"
+    LRCLIB_HOST="https://lrclib.net"
+    LYRICS_LANG=""
+    LYRICS_PROVIDERS="lrclib,multiweb"
+    LYRICS_PREFER_SYNCED="true"
+    LYRICS_UPGRADE_PLAIN="false"
+    LYRICS_SYNC_LEVEL="line"
+    LYRICS_SIDECAR="true"
+    LYRICS_EMBED_STYLE="lrc"
+    LYRICS_MIN_CONFIDENCE="0"
+    LYRICS_OFFSET_MS="0"
+    LAST_DOWNLOAD_FOLDER="Music"
+    COVER_LOCAL=""
+    COOKIES_BROWSER=""
+    COOKIES_FILE=""
+    OTTERRIP_PROXY=""
+    OTTERRIP_NOTIFY="true"
+    OTTERRIP_CHECK_UPDATES="true"
+
+    # Aplicar calidad (actualiza AFMT, AQ, PP_VALUE, PROFILE)
+    apply_quality_choice "$QUALITY_CHOICE"
+
+    # Guardar configuración persistente
+    save_config
+
+    echo -e "\n  ${GREEN}✔ Configuración restablecida a valores predeterminados.${NC}"
+    echo -e "  ${GREEN}✔ Letras siempre incrustadas y sincronizadas según duración.${NC}"
+    sleep 2
+}
+
 menu() {
     while true; do
         clear_screen
@@ -2347,6 +2406,7 @@ menu() {
         echo -e "  ${CYAN}16)${NC} Configurar cookies (YouTube / anti-bot)"
         echo -e "  ${CYAN}17)${NC} Ver historial de descargas"
         echo -e "  ${CYAN}18)${NC} Configurar proxy de red"
+        echo -e "  ${CYAN}19)${NC} Restablecer valores predeterminados"
         echo -e "  ${CYAN} 0)${NC} Salir"
         echo ""
         read -rp "  Opción: " op || exit 0
@@ -2374,6 +2434,7 @@ menu() {
             16) menu_cookies ;;
             17) show_history 50; pause_enter ;;
             18) menu_proxy ;;
+            19) menu_reset_defaults ;;
             0) save_config; echo -e "\n  ${GREEN}¡Hasta luego!${NC}\n"; exit 0 ;;
             *) echo -e "  ${RED}Opción inválida.${NC}"; sleep 1 ;;
         esac

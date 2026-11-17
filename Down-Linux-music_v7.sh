@@ -3247,6 +3247,15 @@ post_process_session() {
     echo -e "  ${YELLOW}⚙${NC} Reparando metadatos${COVER_LOCAL:+ y portada manual} de ${JOB_OK} pista(s)..."
     fix_metadata_batch "$dest" "$AFMT" "$verified" "$COVER_LOCAL" "$workdir" || true
 
+    # Limpiar nombres de archivo: eliminar basura de YouTube (corchetes,
+    # paréntesis, ID de video, etc.) para que quede solo Artista - Canción.
+    local lyr_artist=""
+    if [[ -f "$verified" ]] && command -v jq >/dev/null 2>&1; then
+        lyr_artist="$(jq -r 'select(.artist) | .artist' "$verified" 2>/dev/null | head -n1)"
+        lyr_artist="$(trim_input "$lyr_artist")"
+    fi
+    clean_filenames "$dest" "$lyr_artist"
+
     if [[ "$FETCH_LYRICS" == "true" ]]; then
         echo -e "  ${YELLOW}⚙${NC} Buscando e incrustando letras (${JOB_OK} en cola)..."
         process_lyrics "$dest" "$AFMT" "$verified" "$lyr_summary" || true
@@ -3269,6 +3278,66 @@ post_process_session() {
 # @param $5 Directorio de trabajo.
 # @return 0 siempre.
 # @side-effects Escribe etiquetas en los archivos de audio indicados.
+# ═══════════════════════════════════════════════════════════════
+#  LIMPIEZA DE NOMBRES DE ARCHIVO
+# ═══════════════════════════════════════════════════════════════
+# Renombra archivos de audio eliminando basura de YouTube del nombre:
+#   [Official Music Video], (Official Music Video)
+#   [4K Remaster], (4K Remaster), [Remaster], (Remaster)
+#   [Lyrics], (Lyrics), [HD], (HD), [4K], (4K)
+#   [VIDEO_ID] al final
+# Y elimina el artista duplicado al inicio si ya está en el nombre.
+clean_filenames() {
+    local dest="${1-}" artist="${2-}"
+    [[ -d "$dest" ]] || return 0
+    local py="$(python3 - <<'PYEOF' 2>/dev/null
+import sys, os, re
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+from otterrip_core.query_clean import clean_title, clean_artist
+
+dest = sys.argv[1]
+artist = sys.argv[2] if len(sys.argv) > 2 else ""
+
+cleaned_artist = clean_artist(artist) if artist else ""
+
+exts = {".mp3", ".m4a", ".flac", ".webm", ".mkv", ".mp4", ".lrc", ".jpg", ".webp", ".vtt", ".en.lrc"}
+
+renamed = 0
+for name in sorted(os.listdir(dest)):
+    fpath = os.path.join(dest, name)
+    if not os.path.isfile(fpath):
+        continue
+    base, ext = os.path.splitext(name)
+    ext = ext.lower()
+    if ext not in exts:
+        continue
+    # Usar clean_title para eliminar ruido de YouTube del nombre
+    new_base = clean_title(base)
+    # Eliminar artista duplicado al inicio si coincide con el artista conocido
+    if cleaned_artist and new_base:
+        norm = new_base.replace("–", "-").replace("—", "-")
+        ca_norm = cleaned_artist.replace("–", "-").replace("—", "-")
+        prefix = ca_norm + " - "
+        if norm.lower().startswith(prefix.lower()):
+            new_base = new_base[len(prefix):].strip()
+        prefix2 = ca_norm + ":"
+        if norm.lower().startswith(prefix2.lower()):
+            new_base = new_base[len(prefix2):].strip()
+    new_base = new_base.strip(" -–—_|.")
+    if not new_base or new_base == base:
+        continue
+    new_name = new_base + ext
+    new_path = os.path.join(dest, new_name)
+    if not os.path.exists(new_path):
+        os.rename(fpath, new_path)
+        renamed += 1
+print(renamed)
+PYEOF
+)"
+    [[ -z "$py" ]] && return 0
+    echo -e "  ${DIM}· Nombres de archivo limpiados: ${py}${NC}"
+}
+
 fix_metadata_batch() {
     local dest="${1-}" fmt="${2-}" session="${3-}" cover="${4-}" workdir="${5-}"
     local n_lines=0 jobs="$PARALLEL_JOBS" chunk_dir="" chunk_prefix=""

@@ -61,6 +61,9 @@ _TITLE_NOISE = (
     r"lyrics?\s*video",
     r"\bhd\b",
     r"\b4k\b",
+    # YouTube video ID in brackets/parens at end of title, e.g. [NdYWuo9OFAw]
+    r"\s*\[[a-zA-Z0-9_-]{11}\s*\]",
+    r"\s*\([a-zA-Z0-9_-]{11}\s*\)",
 )
 
 # Trailing genre/channel suffixes — applied separately so $ anchor works.
@@ -205,6 +208,24 @@ def build_query_terms(
         clean_a = clean_artist(extracted_artist)
     else:
         clean_a = clean_artist(artist)
+
+    # Remove artist prefix from title when it's already known separately.
+    # YouTube titles often look like "Artist - Song Title [noise]" and after
+    # noise removal we get "Artist - Song Title".  Since we also pass the
+    # artist as a separate field, including it again in the title makes the
+    # query overly specific (e.g. "Artist - Song Artist") and providers
+    # fail to match.
+    if clean_a and clean_t:
+        # Normalise dashes for comparison
+        t_norm = clean_t.replace("–", "-").replace("—", "-")
+        a_norm = clean_a.replace("–", "-").replace("—", "-")
+        prefix = a_norm + " - "
+        if t_norm.lower().startswith(prefix.lower()):
+            clean_t = clean_t[len(prefix):].strip()
+        # Also handle "Artist: Song" form
+        prefix2 = a_norm + ":"
+        if t_norm.lower().startswith(prefix2.lower()):
+            clean_t = clean_t[len(prefix2):].strip()
 
     # Move feat. artists from title into artist field for better matching
     if feat_artist:

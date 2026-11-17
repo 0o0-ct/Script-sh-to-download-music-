@@ -13,6 +13,8 @@ import unicodedata
 _TITLE_NOISE = (
     r"\(official\s*(?:video|audio|lyric|visualizer|visualiser|video\s*lyrics?)\)",
     r"\[official\s*(?:video|audio|lyric|visualizer|visualiser)\]",
+    r"\(official\s+music\s*video\)",
+    r"\[official\s+music\s*video\]",
     r"\(lyrics?\)",
     r"\[lyrics?\]",
     r"\(lyric\s*video\)",
@@ -23,8 +25,13 @@ _TITLE_NOISE = (
     r"\[hd\]",
     r"\(4k\)",
     r"\[4k\]",
-    r"\(remastered?\s*(?:2\d{3})?\)",
-    r"\[remastered?\s*(?:2\d{3})?\]",
+    r"\(remaster(?:ed)?\s*(?:2\d{3})?\)",
+    r"\(4k\s+remaster(?:ed)?\s*(?:2\d{3})?\)",
+    r"\[4k\s+remaster(?:ed)?\s*(?:2\d{3})?\]",
+    r"\(remaster\)",
+    r"\[remaster\]",
+    r"\b4k\s+remaster\b",
+    r"\[remaster(?:ed)?\s*(?:2\d{3})?\]",
     r"\(live.*?\)",
     r"\[live.*?\]",
     r"\(en\s+vivo.*?\)",
@@ -102,7 +109,9 @@ def _strip_repeated_artist_prefix(title: str) -> tuple[str, str | None]:
         "ARTISTA - Artista - Canción" → ("Canción", "Artista")
         "Riptide" → ("Riptide", None)
     """
-    parts = title.split(" - ", 2)
+    # Normalise en/em dashes to hyphen before splitting
+    norm = title.replace("–", "-").replace("—", "-")
+    parts = norm.split(" - ", 2)
     if len(parts) >= 3:
         part1 = parts[0].strip()
         part2 = parts[1].strip()

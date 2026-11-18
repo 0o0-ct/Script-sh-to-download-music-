@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import time
 from pathlib import Path
 
@@ -27,18 +28,48 @@ def _save_queue(q: list[dict]) -> None:
         _queue_file.write_text(json.dumps(q, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def _is_pid_alive(pid: int) -> bool:
+    """Check if a process with the given PID is still running."""
+    if pid is None or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Process exists but we don't have permission to signal it
+        return True
+    except OSError:
+        return False
+
+
+def _resolve_ids(q: list[dict], raw_ids: list[str]) -> list[int]:
+    """Convert a list of id strings to integers, resolving 'all' to all task ids."""
+    if len(raw_ids) == 1 and raw_ids[0].lower() == "all":
+        return [t["id"] for t in q]
+    return [int(x) for x in raw_ids]
+
+
 def run_queue(args) -> int:
     """Dispatch queue subcommands."""
     cmd = getattr(args, "queue_cmd", None)
 
     if cmd == "recover":
         # Mark paused tasks from previous runs as pending
+        # Also detect running tasks with dead PIDs
         q = _load_queue()
         changed = False
         for task in q:
-            if task.get("status") == "paused" and task.get("pid") != os.getpid():
+            status = task.get("status")
+            if status == "paused" and task.get("pid") != os.getpid():
                 task["status"] = "pending"
                 changed = True
+            elif status == "running":
+                pid = task.get("pid")
+                if pid and not _is_pid_alive(pid):
+                    task["status"] = "pending"
+                    changed = True
         if changed:
             _save_queue(q)
         return 0
@@ -71,30 +102,105 @@ def run_queue(args) -> int:
         task_id = int(args.task_id)
         status = args.status
         error = getattr(args, "error", "")
+        summary = getattr(args, "summary", "") or ""
         q = _load_queue()
         for task in q:
             if task["id"] == task_id:
                 task["status"] = status
                 if error:
                     task["error"] = error
+                if summary:
+                    task["summary"] = summary
                 _save_queue(q)
                 return 0
         return 1
 
     if cmd == "add":
-        url = args.url
+        urls = getattr(args, "urls", None) or [getattr(args, "url", "")]
         dest = getattr(args, "dest", "") or ""
         q = _load_queue()
-        new_id = max((t["id"] for t in q), default=0) + 1
-        q.append({
-            "id": new_id,
-            "url": url,
-            "dest": dest,
-            "status": "pending",
-            "created": time.time(),
-        })
+        new_ids = []
+        for url in urls:
+            if not url:
+                continue
+            new_id = max((t["id"] for t in q), default=0) + 1
+            q.append({
+                "id": new_id,
+                "url": url,
+                "dest": dest,
+                "status": "pending",
+                "created": time.time(),
+            })
+            new_ids.append(new_id)
         _save_queue(q)
-        print(new_id)
+        for nid in new_ids:
+            print(nid)
+        return 0
+
+    if cmd == "pause":
+        raw_ids = getattr(args, "ids", [])
+        q = _load_queue()
+        target_ids = _resolve_ids(q, raw_ids)
+        paused = 0
+        for task in q:
+            if task["id"] in target_ids and task.get("status") == "pending":
+                task["status"] = "paused"
+                paused += 1
+        _save_queue(q)
+        print(paused)
+        return 0
+
+    if cmd == "resume":
+        raw_ids = getattr(args, "ids", [])
+        q = _load_queue()
+        target_ids = _resolve_ids(q, raw_ids)
+        resumed = 0
+        for task in q:
+            if task["id"] in target_ids and task.get("status") == "paused":
+                task["status"] = "pending"
+                resumed += 1
+        _save_queue(q)
+        print(resumed)
+        return 0
+
+    if cmd == "cancel":
+        raw_ids = getattr(args, "ids", [])
+        q = _load_queue()
+        target_ids = _resolve_ids(q, raw_ids)
+        cancelled = 0
+        for task in q:
+            if task["id"] in target_ids:
+                old = task.get("status")
+                if old in ("pending", "paused", "running"):
+                    task["status"] = "cancelled"
+                    cancelled += 1
+        _save_queue(q)
+        print(cancelled)
+        return 0
+
+    if cmd == "retry":
+        raw_ids = getattr(args, "ids", [])
+        q = _load_queue()
+        target_ids = _resolve_ids(q, raw_ids)
+        retried = 0
+        for task in q:
+            if task["id"] in target_ids:
+                old = task.get("status")
+                if old in ("failed", "partial", "cancelled"):
+                    task["status"] = "pending"
+                    task.pop("error", None)
+                    retried += 1
+        _save_queue(q)
+        print(retried)
+        return 0
+
+    if cmd == "clear-done":
+        done_statuses = {"done", "failed", "cancelled"}
+        q = _load_queue()
+        new_q = [t for t in q if t.get("status") not in done_statuses]
+        count = len(q) - len(new_q)
+        _save_queue(new_q)
+        print(count)
         return 0
 
     if cmd == "list":
@@ -139,5 +245,5 @@ def run_queue(args) -> int:
         return 0
 
     # No subcommand
-    print("Usage: queue {recover|claim|get|finish|add|list|stats|rm|clear}")
+    print("Usage: queue {recover|claim|get|finish|add|list|stats|rm|clear|pause|resume|cancel|retry|clear-done}")
     return 1

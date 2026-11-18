@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -72,7 +73,7 @@ class LyricsCache:
         except (json.JSONDecodeError, OSError):
             return None
         ts = data.get("cached_at", 0)
-        if ts and (os.times().elapsed - ts) > self.ttl_seconds:
+        if ts and (time.time() - ts) > self.ttl_seconds:
             try:
                 p.unlink()
             except OSError:
@@ -138,7 +139,7 @@ class LyricsCache:
         key = _cache_key(artist, title, duration_ms, isrc, fingerprint)
         p = self._path(key)
         payload = {
-            "cached_at": os.times().elapsed,
+            "cached_at": time.time(),
             "bundle": bundle,
             "keyed_by": "isrc" if isrc else ("fingerprint" if fingerprint else "legacy"),
         }

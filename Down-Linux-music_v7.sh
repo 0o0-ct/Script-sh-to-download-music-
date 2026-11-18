@@ -35,7 +35,7 @@ readonly YTDLP_MIN_VERSION="2024.02.01" # Versión mínima de yt-dlp (YouTube ca
 # de forma silenciosa ni deja procesos huérfanos a medias.
 trap '' PIPE
 
-OTTERRIP_VERSION="7.3.4"
+OTTERRIP_VERSION="7.3.5"
 OTTERRIP_REPO="0o0-ct/Script-sh-to-download-music-"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
@@ -3503,10 +3503,10 @@ append_history() {
     is_private_dir "$OTTERRIP_DATA_DIR" || return 0
     [[ "$duration" =~ ^[0-9]+$ ]] || duration=0
     # Los campos no pueden contener tabuladores ni saltos de línea.
-    for field in "$url" "$title" "$dest" "$status"; do
-        field="${field//$'\t'/ }"
-        field="${field//$'\n'/ }"
-    done
+    url="${url//$'\t'/ }"; url="${url//$'\n'/ }"
+    title="${title//$'\t'/ }"; title="${title//$'\n'/ }"
+    dest="${dest//$'\t'/ }"; dest="${dest//$'\n'/ }"
+    status="${status//$'\t'/ }"; status="${status//$'\n'/ }"
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$(date '+%Y-%m-%d %H:%M:%S')" "$url" "$title" "$dest" "$status" "$duration" \
         >> "$file" 2>/dev/null || true
@@ -4261,7 +4261,7 @@ menu_queue() {
                 py_core queue "$verb" $ids || true
                 sleep 1
                 ;;
-            7) echo "  Eliminadas: $(py_core queue clear)"; sleep 1 ;;
+            7) echo "  Eliminadas: $(py_core queue clear-done)"; sleep 1 ;;
             0|"") return 0 ;;
             *) echo -e "  ${RED}Opción inválida.${NC}"; sleep 1 ;;
         esac

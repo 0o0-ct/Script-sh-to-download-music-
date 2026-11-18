@@ -289,6 +289,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     lo_list = lo_sub.add_parser("list", help="List all stored overrides")
 
+    # --- fingerprint ---
+    p = sub.add_parser("fingerprint", help="Compute acoustic fingerprint")
+    p.add_argument("audio_file", help="Path to audio file")
+    p.add_argument("--acoustid", action="store_true", help="Look up on AcoustID")
+
+    # --- cover-art ---
+    p = sub.add_parser("cover-art", help="Download album cover art")
+    p.add_argument("release_id", help="MusicBrainz release MBID")
+    p.add_argument("--size", default="250", choices=["thumbnail", "250", "500", "archive"])
+    p.add_argument("--cache", action="store_true", help="Cache the result")
+    p.add_argument("--embed", default="", help="Embed in this audio file")
+
+    # --- mb-lookup ---
+    p = sub.add_parser("mb-lookup", help="Search MusicBrainz for metadata")
+    p.add_argument("title", help="Recording title")
+    p.add_argument("artist", help="Artist name")
+    p.add_argument("--album", default="", help="Album name (optional)")
+    p.add_argument("--isrc", default="", help="Search by ISRC instead")
+
     return parser
 
 
@@ -309,6 +328,9 @@ COMMAND_MAP = {
     "lyrics-manage": lyrics_verify.run_lyrics_manage,
     "lyrics-overrides": lyrics_overrides.run_lyrics_overrides,
     "state-db": None,  # handled inline
+    "fingerprint": None,  # handled inline
+    "cover-art": None,  # handled inline
+    "mb-lookup": None,  # handled inline
 }
 
 
@@ -415,6 +437,85 @@ def _run_state_db(args) -> int:
         return 1
 
 
+def _run_new_commands(args) -> int:
+    """Handle fingerprint, cover-art, and mb-lookup subcommands."""
+    import json as _json
+
+    cmd = args.command
+
+    if cmd == "fingerprint":
+        from otterrip_core.audio_fingerprint import (
+            compute_fingerprint,
+            compute_fingerprint_acoustid,
+        )
+        if getattr(args, "acoustid", False):
+            result = compute_fingerprint_acoustid(args.audio_file)
+            if result:
+                print(_json.dumps(result, ensure_ascii=False))
+                return 0
+            print("No AcoustID match found.", file=sys.stderr)
+            return 1
+        else:
+            fp = compute_fingerprint(args.audio_file)
+            if fp:
+                print(fp)
+                return 0
+            print("Could not compute fingerprint.", file=sys.stderr)
+            return 1
+
+    elif cmd == "cover-art":
+        from otterrip_core.cover_art import (
+            fetch_and_cache_cover,
+            embed_cover,
+        )
+        size = getattr(args, "size", "250") or "250"
+        do_cache = getattr(args, "cache", False)
+        embed_file = getattr(args, "embed", "")
+
+        if do_cache:
+            data = fetch_and_cache_cover(args.release_id, size)
+        else:
+            from otterrip_core.cover_art import fetch_cover_art
+            data = fetch_cover_art(args.release_id, size)
+
+        if data is None:
+            print("No cover art found.", file=sys.stderr)
+            return 1
+
+        if embed_file:
+            ok = embed_cover(embed_file, data)
+            if ok:
+                print(f"Cover embedded in {embed_file}")
+            else:
+                print("Failed to embed cover.", file=sys.stderr)
+                return 1
+        else:
+            # Write to stdout
+            sys.stdout.buffer.write(data)
+        return 0
+
+    elif cmd == "mb-lookup":
+        from otterrip_core.musicbrainz import (
+            lookup_canonical_sync,
+            lookup_by_isrc_sync,
+        )
+        isrc = getattr(args, "isrc", "")
+        if isrc:
+            meta = lookup_by_isrc_sync(isrc)
+        else:
+            album = getattr(args, "album", "") or ""
+            meta = lookup_canonical_sync(args.title, args.artist, album)
+
+        if meta is None:
+            print("No MusicBrainz match found.", file=sys.stderr)
+            return 1
+
+        print(_json.dumps(meta.to_dict(), ensure_ascii=False))
+        return 0
+
+    return 1
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
@@ -425,9 +526,12 @@ def main() -> int:
 
     handler = COMMAND_MAP.get(args.command)
 
-    # Inline handler for state-db
+    # Inline handlers
     if args.command == "state-db":
         return _run_state_db(args)
+
+    if args.command in ("fingerprint", "cover-art", "mb-lookup"):
+        return _run_new_commands(args)
 
     if handler is None:
         print(f"Unknown command: {args.command}", file=sys.stderr)

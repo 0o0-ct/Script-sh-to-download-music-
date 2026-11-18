@@ -4,8 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "otterrip-core"
-version = "7.4.0"
+version = "7.5.0"
 dependencies = ["mutagen"]
+
+[project.optional-dependencies]
+chromaprint = ["pyacoustid"]
+full = ["pyacoustid", "aiohttp"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

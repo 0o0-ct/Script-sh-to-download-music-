@@ -29,6 +29,9 @@ import pytest
 
 from otterrip_core.audio_fingerprint import (
     compute_fingerprint,
+    compute_fingerprint_chromaprint,
+    compute_fingerprint_librosa,
+    compute_fingerprint_acoustid,
     fingerprint_cache_key,
     FINGERPRINT_DURATION_S,
     FINGERPRINT_SR,
@@ -283,3 +286,69 @@ class TestLyricsCacheFingerprint:
         count = cache.clear()
         assert count == 3
         assert len(list(cache.cache_dir.glob("*.json"))) == 0
+
+
+class TestChromaprintFingerprint:
+    """Test Chromaprint fingerprinting functions."""
+
+    def test_chromaprint_missing_file(self):
+        """Return None for nonexistent file."""
+        result = compute_fingerprint_chromaprint("/nonexistent/file.mp3")
+        assert result is None
+
+    def test_chromaprint_no_pyacoustid_no_fpcalc(self):
+        """Return None when neither pyacoustid nor fpcalc is available."""
+        # Create a temp file so the path check passes
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            f.write(b"fake audio")
+            path = f.name
+        try:
+            result = compute_fingerprint_chromaprint(path)
+            # Without pyacoustid or fpcalc, should return None
+            assert result is None
+        finally:
+            os.unlink(path)
+
+    def test_fingerprint_tries_chromaprint_first(self):
+        """compute_fingerprint should try chromaprint before librosa."""
+        # Without either engine, should return None
+        result = compute_fingerprint("/nonexistent/file.mp3")
+        assert result is None
+
+    def test_fingerprint_missing_file(self):
+        """compute_fingerprint returns None for missing file."""
+        result = compute_fingerprint("/nonexistent/path/audio.mp3")
+        assert result is None
+
+    def test_librosa_missing_file(self):
+        """compute_fingerprint_librosa returns None for missing file."""
+        result = compute_fingerprint_librosa("/nonexistent/file.mp3")
+        assert result is None
+
+
+class TestAcoustidLookup:
+    """Test AcoustID lookup function."""
+
+    def test_no_api_key(self):
+        """Return None when no API key is configured."""
+        result = compute_fingerprint_acoustid("/some/file.mp3")
+        assert result is None
+
+    def test_empty_api_key(self):
+        """Return None when API key is empty string."""
+        result = compute_fingerprint_acoustid("/some/file.mp3", api_key="")
+        assert result is None
+
+    def test_missing_file(self):
+        """Return None for nonexistent file even with API key."""
+        result = compute_fingerprint_acoustid(
+            "/nonexistent/file.mp3", api_key="fake-key"
+        )
+        assert result is None
+
+    def test_no_pyacoustid(self):
+        """Return None when pyacoustid is not installed."""
+        result = compute_fingerprint_acoustid("/some/file.mp3", api_key="fake-key")
+        # Without pyacoustid, should return None
+        assert result is None

@@ -193,7 +193,7 @@ def run_fix_metadata(args) -> int:
     if session:
         files = _read_session(session)
     elif Path(target).is_dir():
-        for ext in [".mp3", ".flac", ".m4a"]:
+        for ext in [".mp3", ".flac", ".m4a", ".ogg", ".opus", ".wav"]:
             files.extend(str(f) for f in Path(target).rglob(f"*{ext}"))
     elif Path(target).is_file():
         files = [target]

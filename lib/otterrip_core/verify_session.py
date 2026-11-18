@@ -16,7 +16,7 @@ except ImportError:
     HAS_MUTAGEN = False
 
 
-AUDIO_EXTS = {".mp3": "mp3", ".flac": "flac", ".m4a": "m4a", ".ogg": "ogg", ".wav": "wav"}
+AUDIO_EXTS = {".mp3": "mp3", ".flac": "flac", ".m4a": "m4a", ".ogg": "ogg", ".wav": "wav", ".opus": "opus"}
 
 
 def _get_duration(filepath: Path) -> float | None:

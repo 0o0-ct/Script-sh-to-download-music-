@@ -35,7 +35,7 @@ readonly YTDLP_MIN_VERSION="2024.02.01" # Versión mínima de yt-dlp (YouTube ca
 # de forma silenciosa ni deja procesos huérfanos a medias.
 trap '' PIPE
 
-OTTERRIP_VERSION="7.4.0"
+OTTERRIP_VERSION="7.6.0"
 OTTERRIP_REPO="0o0-ct/Script-sh-to-download-music-"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
@@ -1020,11 +1020,14 @@ ask_path() {
 # ═══════════════════════════════════════════════════════════════
 apply_quality_choice() {
     case "${1-}" in
-        1) AFMT="mp3";  AQ="320K"; PP_VALUE=""; PROFILE="MP3 320 kbps" ;;
-        2) AFMT="m4a";  AQ="256K"; PP_VALUE=""; PROFILE="M4A AAC 256 kbps" ;;
-        3) AFMT="m4a";  AQ="320K"; PP_VALUE=""; PROFILE="M4A AAC 320 kbps" ;;
-        4) AFMT="flac"; AQ="0";    PP_VALUE="ffmpeg:-sample_fmt s16 -ar 44100"; PROFILE="FLAC 16-bit/44.1kHz" ;;
-        5) AFMT="flac"; AQ="0";    PP_VALUE="ffmpeg:-sample_fmt s32 -ar 96000"; PROFILE="FLAC 24-bit/96kHz" ;;
+        1) AFMT="mp3";      AQ="320K"; PP_VALUE=""; PROFILE="MP3 320 kbps" ;;
+        2) AFMT="m4a";      AQ="256K"; PP_VALUE=""; PROFILE="M4A AAC 256 kbps" ;;
+        3) AFMT="m4a";      AQ="320K"; PP_VALUE=""; PROFILE="M4A AAC 320 kbps" ;;
+        4) AFMT="flac";     AQ="0";    PP_VALUE="ffmpeg:-sample_fmt s16 -ar 44100"; PROFILE="FLAC 16-bit/44.1kHz" ;;
+        5) AFMT="flac";     AQ="0";    PP_VALUE="ffmpeg:-sample_fmt s32 -ar 96000"; PROFILE="FLAC 24-bit/96kHz" ;;
+        6) AFMT="original"; AQ="";     PP_VALUE=""; PROFILE="Original (formato fuente)" ;;
+        7) AFMT="opus";     AQ="160K"; PP_VALUE=""; PROFILE="Opus 160 kbps" ;;
+        8) AFMT="wav";      AQ="0";    PP_VALUE=""; PROFILE="WAV PCM 16-bit" ;;
         *) return 1 ;;
     esac
     # shellcheck disable=SC2034  # se persiste vía save_config (expansión indirecta)
@@ -1048,7 +1051,7 @@ is_bool() { [[ "${1-}" == "true" || "${1-}" == "false" ]]; }
 #   proxy    → URL de proxy válida (o vacío)
 #   string   → texto sin saltos de línea ni tabuladores
 declare -gA CONFIG_SCHEMA=(
-    [QUALITY_CHOICE]="enum:1,2,3,4,5:1"
+    [QUALITY_CHOICE]="enum:1,2,3,4,5,6,7,8:1"
     [DUR_MIN]="int:-:60"
     [DUR_MAX]="int:-:480"
     [PARALLEL_JOBS]="int:-:3"
@@ -1073,6 +1076,9 @@ declare -gA CONFIG_SCHEMA=(
     [OTTERRIP_PROXY]="proxy:-:"
     [OTTERRIP_NOTIFY]="bool:-:true"
     [OTTERRIP_CHECK_UPDATES]="bool:-:true"
+    [NORMALIZE_VOLUME]="bool:-:false"
+    [NORMALIZE_MODE]="enum:replaygain,loudnorm:replaygain"
+    [KEEP_VIDEO_THUMBNAIL]="bool:-:false"
 )
 
 # Orden estable de las claves al guardar el archivo de configuración.
@@ -1082,6 +1088,7 @@ CONFIG_KEYS=(
     LYRICS_AUTO_ALIGN LYRICS_UPGRADE_PLAIN LYRICS_SYNC_LEVEL LYRICS_SIDECAR LYRICS_EMBED_STYLE
     LYRICS_MIN_CONFIDENCE LYRICS_OFFSET_MS LAST_DOWNLOAD_FOLDER COVER_LOCAL COOKIES_BROWSER
     COOKIES_FILE OTTERRIP_PROXY OTTERRIP_NOTIFY OTTERRIP_CHECK_UPDATES
+    NORMALIZE_VOLUME NORMALIZE_MODE KEEP_VIDEO_THUMBNAIL
 )
 
 # Valida un valor contra el esquema. Devuelve 0 si el valor es aceptable.
@@ -2510,15 +2517,21 @@ menu_quality() {
     echo -e "  ${CYAN}3)${NC} M4A  AAC 320 kbps"
     echo -e "  ${CYAN}4)${NC} FLAC 16-bit / 44.1 kHz"
     echo -e "  ${CYAN}5)${NC} FLAC 24-bit / 96 kHz"
+    echo -e "  ${CYAN}6)${NC} Original (conservar formato fuente)"
+    echo -e "  ${CYAN}7)${NC} Opus 160 kbps"
+    echo -e "  ${CYAN}8)${NC} WAV PCM 16-bit"
     echo -e "  ${CYAN}0)${NC} Volver"
     echo ""
     read -rp "  Opción: " q || return 0
     case "$q" in
-        1|2|3|4|5) apply_quality_choice "$q" ;;
+        1|2|3|4|5|6|7|8) apply_quality_choice "$q" ;;
         0|"") return 0 ;;
         *) echo -e "  ${RED}Inválido.${NC}"; sleep 1; return 0 ;;
     esac
     echo -e "  ${GREEN}✔ $PROFILE${NC}"
+    if [[ "$QUALITY_CHOICE" == "6" ]]; then
+        echo -e "  ${YELLOW}⚠ El formato dependerá de la fuente (MP3, M4A, OGG, etc.).${NC}"
+    fi
     sleep 0.8
 }
 
@@ -3237,9 +3250,31 @@ build_common_flags() {
         --sleep-requests 1
         --sleep-interval 1
         --max-sleep-interval 3
-        -x
-        --audio-format "$AFMT"
-        --audio-quality "$AQ"
+    )
+
+    if [[ "$AFMT" == "original" ]]; then
+        # Perfil Original: sin recodificación; yt-dlp descarga el mejor audio disponible.
+        COMMON_FLAGS+=(
+            --embed-thumbnail
+            --convert-thumbnails jpg
+        )
+        msg_warn "Perfil Original: se conservará el formato y calidad de la fuente."
+        msg_warn "El formato resultante dependerá de lo que ofrezca el servicio (MP3, M4A, OGG, etc.)."
+    else
+        # Perfiles con conversión: MP3, M4A, FLAC, Opus, WAV.
+        COMMON_FLAGS+=(
+            -x
+            --audio-format "$AFMT"
+            --audio-quality "$AQ"
+        )
+        # Advertencia FLAC desde fuente con pérdidas.
+        if [[ "$AFMT" == "flac" ]]; then
+            msg_warn "Perfil FLAC: la fuente puede ser audio con pérdidas (MP3/AAC)."
+            msg_warn "FLAC no recupera información perdida; el archivo será más grande sin ganancia de calidad audible."
+        fi
+    fi
+
+    COMMON_FLAGS+=(
         --embed-metadata
         --parse-metadata "%(title)s:%(meta_title)s"
         --parse-metadata "%(artist,uploader,creator)s:%(meta_artist)s"
@@ -3248,8 +3283,6 @@ build_common_flags() {
         --parse-metadata "%(genre)s:%(meta_genre)s"
         --parse-metadata "%(track_number,playlist_index)s:%(meta_track)s"
         --match-filter "duration > $DUR_MIN & duration <= $DUR_MAX"
-        --embed-thumbnail
-        --convert-thumbnails jpg
         --download-archive "$archive"
     )
     if [[ "$FETCH_LYRICS" == "true" ]]; then
@@ -3412,6 +3445,13 @@ post_process_session() {
         JOB_LYR_NOTFOUND="$(summary_value "$lyr_summary" notfound 0)"
         JOB_LYR_ALREADY="$(summary_value "$lyr_summary" already 0)"
     fi
+
+    # Normalización de volumen opcional (post-proceso)
+    if [[ "$NORMALIZE_VOLUME" == "true" && -n "$dest" ]]; then
+        echo -e "  ${YELLOW}⚙${NC} Normalizando volumen (${NORMALIZE_MODE:-replaygain})..."
+        py_core normalize "$dest" --mode "${NORMALIZE_MODE:-replaygain}" || true
+    fi
+
     return 0
 }
 

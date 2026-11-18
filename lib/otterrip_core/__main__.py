@@ -27,6 +27,8 @@ from otterrip_core import convert
 from otterrip_core import lyrics_verify
 from otterrip_core import lyrics_overrides
 from otterrip_core import state_db
+from otterrip_core import normalize
+from otterrip_core import post_process
 
 
 def positive_int(value: str) -> int:
@@ -308,6 +310,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--album", default="", help="Album name (optional)")
     p.add_argument("--isrc", default="", help="Search by ISRC instead")
 
+    # --- normalize ---
+    p = sub.add_parser("normalize", help="Normalize audio volume")
+    p.add_argument("target", help="Audio file or directory")
+    p.add_argument("--mode", default="replaygain", choices=["replaygain", "loudnorm"],
+                   help="Normalization mode (default: replaygain)")
+    p.add_argument("--target-lufs", type=float, default=-16.0,
+                   help="Target integrated loudness in LUFS (default: -16)")
+    p.add_argument("--true-peak", type=float, default=-1.5,
+                   help="True peak limit in dBTP (default: -1.5)")
+
+    # --- post-process ---
+    p = sub.add_parser("post-process", help="Post-processing pipeline")
+    p.add_argument("target", help="Audio file or directory")
+    p.add_argument("--keep-thumbnail", action="store_true",
+                   help="Keep video thumbnail instead of fetching cover art")
+    p.add_argument("--session", default="",
+                   help="Session manifest file (JSON lines)")
+
     return parser
 
 
@@ -331,6 +351,8 @@ COMMAND_MAP = {
     "fingerprint": None,  # handled inline
     "cover-art": None,  # handled inline
     "mb-lookup": None,  # handled inline
+    "normalize": normalize.run_normalize,
+    "post-process": post_process.run_post_process,
 }
 
 

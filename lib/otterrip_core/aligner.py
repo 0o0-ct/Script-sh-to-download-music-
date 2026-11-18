@@ -58,6 +58,13 @@ class AlignReport:
 NOTE_NO_LIBROSA = "librosa no instalado — alineación forzada omitida"
 NOTE_AUDIO_FAIL = "no se pudo leer el audio para la alineación forzada"
 NOTE_TOO_FEW = "pocos onsets o líneas — alineación forzada omitida"
+NOTE_NO_OFFSET = "sin offset global detectable"
+NOTE_OFFSET_APPLIED = "offset global detectado y aplicado"
+
+# ── Global offset detection constants ──────────────────────────────
+MIN_GLOBAL_OFFSET_MS = 500    # minimum offset to consider (ms)
+MIN_CONSISTENT_LINES = 3      # minimum lines to confirm consistency
+MAX_CONSISTENCY_DEVIATION_MS = 300  # max deviation between line offsets
 
 
 def align_lrc_to_audio(
@@ -276,6 +283,137 @@ def _apply_offset(
     if offset_ms == 0:
         return list(lines)
     return [(max(0, ms + offset_ms), txt) for ms, txt in lines]
+
+
+# ── Global offset detection ────────────────────────────────────────
+
+
+def detect_global_offset(
+    lines: Sequence[tuple[int, str]],
+    audio_path: str,
+    min_offset_ms: int = MIN_GLOBAL_OFFSET_MS,
+    min_consistent_lines: int = MIN_CONSISTENT_LINES,
+    max_deviation_ms: int = MAX_CONSISTENCY_DEVIATION_MS,
+    search_window_ms: int = 2000,
+) -> tuple[int, str]:
+    """Detect a constant global offset between LRC timestamps and audio onsets.
+
+    When an LRC file comes from a different source (e.g. LRCLIB) than the
+    downloaded audio (e.g. YouTube), the entire lyric may be shifted by a
+    constant amount — for example, the LRC starts at 0:00 but the vocal
+    in the audio starts at 0:02.
+
+    This function compares the first few LRC line timestamps with the
+    nearest audio onsets.  If the per-line offsets are all similar
+    (within *max_deviation_ms*) and the median offset exceeds
+    *min_offset_ms*, returns the detected offset.  Otherwise returns 0.
+
+    Args:
+        lines: Sorted list of ``(milliseconds, text)`` tuples.
+        audio_path: Path to the audio file on disk.
+        min_offset_ms: Minimum absolute offset to consider applying.
+        min_consistent_lines: Minimum number of lines that must agree.
+        max_deviation_ms: Maximum deviation between individual line offsets.
+        search_window_ms: Window to search for the nearest onset per line.
+
+    Returns:
+        A tuple of ``(offset_ms, note)``.  When offset is 0, *note*
+        explains why no offset was applied.
+    """
+    if len(lines) < min_consistent_lines:
+        return 0, NOTE_NO_OFFSET
+
+    # ── Detect onsets ──────────────────────────────────────────────
+    onset_times_ms = _detect_onsets(audio_path)
+    if onset_times_ms is None or len(onset_times_ms) < MIN_ONSETS:
+        return 0, NOTE_AUDIO_FAIL if onset_times_ms is None else NOTE_TOO_FEW
+
+    # ── Calculate per-line offsets using first N lines ─────────────
+    # Use up to 10 lines to get a robust estimate
+    num_lines_to_check = min(len(lines), 10)
+    per_line_offsets: list[int] = []
+
+    for i in range(num_lines_to_check):
+        lrc_ms, _ = lines[i]
+        nearest = _nearest_onset(lrc_ms, onset_times_ms, search_window_ms)
+        if nearest is not None:
+            offset = nearest - lrc_ms
+            per_line_offsets.append(offset)
+
+    if len(per_line_offsets) < min_consistent_lines:
+        return 0, NOTE_NO_OFFSET
+
+    # ── Check consistency: all offsets should be similar ───────────
+    median_offset = _median(per_line_offsets)
+    deviations = [abs(o - median_offset) for o in per_line_offsets]
+    max_dev = max(deviations)
+
+    if max_dev > max_deviation_ms:
+        # Offsets are too inconsistent — not a global shift
+        logger.debug(
+            "global offset inconsistent: median %d ms, max deviation %d ms",
+            median_offset, max_dev,
+        )
+        return 0, NOTE_NO_OFFSET
+
+    # ── Check magnitude: offset must be significant ────────────────
+    if abs(median_offset) < min_offset_ms:
+        return 0, NOTE_NO_OFFSET
+
+    # ── Apply the detected offset ──────────────────────────────────
+    offset_ms = int(median_offset)
+    note = f"{NOTE_OFFSET_APPLIED}: {offset_ms:+d} ms"
+    logger.info(
+        "%s (based on %d lines, max deviation %d ms)",
+        note, len(per_line_offsets), max_dev,
+    )
+    return offset_ms, note
+
+
+def _median(values: list[int]) -> int:
+    """Return the median of a list of integers."""
+    sorted_vals = sorted(values)
+    n = len(sorted_vals)
+    if n % 2 == 1:
+        return sorted_vals[n // 2]
+    else:
+        return (sorted_vals[n // 2 - 1] + sorted_vals[n // 2]) // 2
+
+
+def apply_global_offset_to_bundle(
+    bundle,
+    audio_path: str,
+    min_offset_ms: int = MIN_GLOBAL_OFFSET_MS,
+) -> tuple[int, str]:
+    """Detect and apply a global offset to a :class:`LyricsBundle` in-place.
+
+    Convenience wrapper around :func:`detect_global_offset` that also
+    mutates the bundle's lines and LRC string when an offset is found.
+
+    Args:
+        bundle: A :class:`LyricsBundle` with synced lyrics.
+        audio_path: Path to the audio file.
+        min_offset_ms: Minimum absolute offset to consider.
+
+    Returns:
+        Tuple of ``(applied_offset_ms, note)``.
+    """
+    if not bundle.has_sync or not bundle.lines:
+        return 0, "sin letras sincronizadas"
+
+    offset_ms, note = detect_global_offset(bundle.lines, audio_path, min_offset_ms)
+    if offset_ms == 0:
+        return 0, note
+
+    # Apply the offset to all lines
+    new_lines = _apply_offset(bundle.lines, offset_ms)
+    new_lines.sort(key=lambda x: x[0])
+    bundle.lines = new_lines
+    bundle.lrc = normalise_lrc(new_lines)
+    bundle.offset_ms += offset_ms
+    bundle.warnings.append(f"offset global automático: {note}")
+
+    return offset_ms, note
 
 
 # ── Convenience: LRC string I/O ────────────────────────────────────

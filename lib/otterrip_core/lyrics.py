@@ -1025,6 +1025,7 @@ async def _process_file(
         return "notfound"
 
     # --- Auto-align to the real audio (different recording/edition) -----
+    auto_align_applied = False
     if auto_align and best.has_sync and best.lines:
         from otterrip_core.align import auto_align_bundle
 
@@ -1039,10 +1040,35 @@ async def _process_file(
                 _ALIGN_NOTE_COUNTS.get(align_note, 0) + 1
             )
         if applied_ms:
+            auto_align_applied = True
             print(
                 f"    · Alineación automática: {applied_ms:+d} ms "
                 f"(conf {align_conf:.2f})"
             )
+
+        # --- Global offset detection (fallback if cross-correlation
+        #     didn't find a significant shift) -------------------------
+        if not auto_align_applied:
+            from otterrip_core.aligner import (
+                apply_global_offset_to_bundle as detect_and_apply_global_offset,
+            )
+
+            global_offset_ms, global_note = detect_and_apply_global_offset(
+                best, str(fpath)
+            )
+            if global_offset_ms:
+                auto_align_applied = True
+                print(
+                    f"    · Offset global detectado: {global_offset_ms:+d} ms"
+                )
+                best.warnings.append(
+                    f"offset global automático: {global_note}"
+                )
+            elif global_note and global_note not in _ALIGN_NOTE_SEEN:
+                _ALIGN_NOTE_SEEN.add(global_note)
+                _ALIGN_NOTE_COUNTS[global_note] = (
+                    _ALIGN_NOTE_COUNTS.get(global_note, 0) + 1
+                )
 
     # --- Forced line-by-line alignment to audio onsets -----------------
     if force_align and best.has_sync and best.lines:
@@ -1067,8 +1093,9 @@ async def _process_file(
                     _ALIGN_NOTE_COUNTS.get(align_report.note, 0) + 1
                 )
 
-    # Apply offset if requested (skip if force_align already applied it)
-    if offset_ms != 0 and best.lines and not force_align:
+    # Apply manual offset if requested (skip if auto-align or force_align
+    # already applied an offset)
+    if offset_ms != 0 and best.lines and not force_align and not auto_align_applied:
         from otterrip_core.offset import apply_offset_to_bundle
         best.lines = [(max(0, ms + offset_ms), txt) for ms, txt in best.lines]
         best.lines.sort(key=lambda x: x[0])

@@ -96,13 +96,47 @@ def normalize_unicode(value: str) -> str:
     return stripped.casefold().strip()
 
 
+def _norm_eq(a: str, b: str) -> bool:
+    """Accent- and case-insensitive equality ("Pablo Martínez" == "Pablo Martinez")."""
+    return normalize_unicode(a) == normalize_unicode(b)
+
+
+# Album tags that carry no information — sent as a filter they poison the
+# exact-match lookup ("Descalzos" exists, but album_name=NA returns 404).
+_GARBAGE_ALBUMS = frozenset(
+    {
+        "",
+        "na",
+        "n/a",
+        "none",
+        "null",
+        "unknown",
+        "unknown album",
+        "album desconocido",
+        "desconocido",
+        "single",
+        "untitled",
+    }
+)
+
+
+def _clean_album(album: str) -> str:
+    """Lowercase-agnostic drop of placeholder album tags ("NA", "Unknown", …)."""
+    if not album:
+        return ""
+    cleaned = _WS_RE.sub(" ", album).strip(" -–—|").strip()
+    if normalize_unicode(cleaned) in _GARBAGE_ALBUMS:
+        return ""
+    return cleaned
+
+
 def _strip_repeated_artist_prefix(title: str) -> tuple[str, str | None]:
     """Remove repeated artist prefix from YouTube Music titles.
 
     YouTube Music sometimes embeds the artist name twice at the start of the
     title, e.g. "JON CARLO - Jon Carlo - Quema Mi Vida".  This function detects
-    that pattern (first two dash-separated segments match case-insensitively)
-    and strips the duplicate prefix so only the actual track name remains.
+    that pattern (first two dash-separated segments match) and strips the
+    duplicate prefix so only the actual track name remains.
 
     Returns ``(cleaned_title, extracted_artist)``.  The extracted artist is
     useful when the metadata artist field is empty.
@@ -118,9 +152,45 @@ def _strip_repeated_artist_prefix(title: str) -> tuple[str, str | None]:
     if len(parts) >= 3:
         part1 = parts[0].strip()
         part2 = parts[1].strip()
-        if part1 and part2 and part1.lower() == part2.lower():
+        if part1 and part2 and _norm_eq(part1, part2):
             return parts[2].strip(), part2
     return title, None
+
+
+def strip_artist_from_title(title: str, artist: str) -> str:
+    """Remove the artist name from a compound YouTube title.
+
+    Handles the patterns exact-match lyrics APIs cannot tolerate:
+        "Artist - Song"             → "Song"   (prefix)
+        "Song - Artist"             → "Song"   (suffix)
+        "Song - Artist - Playlist"  → "Song"   (suffix + uploader context)
+    Comparisons are accent- and case-insensitive, so "Pablo Martínez"
+    still matches the tag "Pablo Martinez".
+
+    A segment equal to the artist also discards everything after it: in
+    "Un Paso A La Vez - Aldana Canale - Oración para momentos difíciles"
+    the trailing part is the playlist name, not part of the song title.
+    """
+    if not artist or not title:
+        return title
+    norm = title.replace("–", "-").replace("—", "-")
+    parts = [p.strip() for p in norm.split(" - ")]
+    if len(parts) < 2:
+        return title
+    # Leading duplicated artist: "Artist - Song" / "Artist - Artist - Song".
+    start = 0
+    if _norm_eq(parts[0], artist):
+        start = 1
+        if len(parts) >= 2 and _norm_eq(parts[1], artist):
+            start = 2
+    # Trailing/mid artist: drop that segment and everything after it.
+    end = len(parts)
+    for i in range(len(parts) - 1, start, -1):
+        if _norm_eq(parts[i], artist):
+            end = i
+            break
+    cleaned = " - ".join(parts[start:end]).strip()
+    return cleaned or title
 
 
 def clean_title(title: str) -> str:
@@ -209,23 +279,24 @@ def build_query_terms(
     else:
         clean_a = clean_artist(artist)
 
-    # Remove artist prefix from title when it's already known separately.
-    # YouTube titles often look like "Artist - Song Title [noise]" and after
-    # noise removal we get "Artist - Song Title".  Since we also pass the
-    # artist as a separate field, including it again in the title makes the
-    # query overly specific (e.g. "Artist - Song Artist") and providers
-    # fail to match.
+    # Remove the artist from compound titles — "Artist - Song",
+    # "Song - Artist", "Song - Artist - Playlist". Accent/case-insensitive:
+    # including the artist again in the title makes the query overly
+    # specific and exact-match providers fail to find the track.
     if clean_a and clean_t:
-        # Normalise dashes for comparison
-        t_norm = clean_t.replace("–", "-").replace("—", "-")
-        a_norm = clean_a.replace("–", "-").replace("—", "-")
-        prefix = a_norm + " - "
-        if t_norm.lower().startswith(prefix.lower()):
-            clean_t = clean_t[len(prefix):].strip()
-        # Also handle "Artist: Song" form
-        prefix2 = a_norm + ":"
-        if t_norm.lower().startswith(prefix2.lower()):
-            clean_t = clean_t[len(prefix2):].strip()
+        stripped = strip_artist_from_title(clean_t, clean_a)
+        if stripped:
+            clean_t = stripped
+        # Also handle "Artist: Song" form (length-guarded: NFKD can change
+        # the string length, in which case we skip the slice).
+        n_t = normalize_unicode(clean_t)
+        n_prefix = normalize_unicode(clean_a + ":")
+        if (
+            n_t.startswith(n_prefix)
+            and len(n_t) == len(clean_t)
+            and len(n_prefix) == len(clean_a) + 1
+        ):
+            clean_t = clean_t[len(clean_a) + 1:].strip()
 
     # Move feat. artists from title into artist field for better matching
     if feat_artist:
@@ -237,6 +308,6 @@ def build_query_terms(
     return {
         "title": clean_t,
         "artist": clean_a,
-        "album": clean_title(album) if album else "",
+        "album": _clean_album(album),
         "search": f"{clean_t} {clean_a}".strip(),
     }

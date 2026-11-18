@@ -9,7 +9,11 @@ import aiohttp
 
 from otterrip_core.lyrics_bundle import LyricsBundle
 from otterrip_core.lrc_validator import validate_and_normalise_lrc, normalise_lrc
-from otterrip_core.query_clean import build_query_terms, split_feat
+from otterrip_core.query_clean import (
+    build_query_terms,
+    split_feat,
+    normalize_unicode,
+)
 from otterrip_core.adapters.base import BaseProvider, SongQuery
 
 
@@ -33,12 +37,14 @@ class LrclibProvider(BaseProvider):
         """Search LRCLIB, returning validated LyricsBundle objects.
 
         Strategy:
-        1. Exact search (with duration) using full artist + title.
-        2. Broad search (no duration) using full artist + title.
-        3. Fallback: broad search with title only (no artist) — helps when
-           the artist metadata from YouTube Music is too specific (multiple
-           comma-separated artists) and LRCLIB has the track under a different
-           artist name.
+        1. Exact match (``/api/get``, with duration) using artist + title.
+        2. Filtered search (``/api/search`` with ``track_name``/``artist_name``)
+           — tolerant of case, accents and residual junk in the title.
+        3. Full-text search (``/api/search?q=``) — catches compound YouTube
+           titles like "Canción - Artista - Playlist" after cleaning.
+        4. Title-only search — helps when YouTube Music metadata has multiple
+           artists (e.g. "Un Corazón, Kim Richards, Marco Barrientos") but
+           LRCLIB has the track under a simpler artist name.
         """
         bundles: list[LyricsBundle] = []
 
@@ -49,32 +55,46 @@ class LrclibProvider(BaseProvider):
                 query.title, query.artist, query.album, feat_artist
             )
 
-        # 1) Exact search with real audio duration.
+        # 1) Exact match with real audio duration.
         exact = await self._fetch_exact(
             terms["artist"], terms["title"], terms["album"],
             query.duration, query.isrc,
         )
         if exact:
             bundles.append(exact)
+        if exact and exact.has_sync:
+            return bundles
 
-        # 2) Broad search (no duration) if exact failed or not synced.
+        # 2) Filtered search — tolerant matching on track + artist.
         if not bundles or not bundles[0].has_sync:
-            broad = await self._fetch_broad(
-                terms["artist"], terms["title"], terms["album"], query.isrc
-            )
-            if broad and (not bundles or broad.source != bundles[0].source):
-                bundles.append(broad)
+            bundles.extend(await self._fetch_search(
+                terms["artist"], terms["title"],
+                query.duration, query.isrc,
+            ))
+        if bundles and bundles[0].has_sync:
+            bundles.sort(key=self._rank_key(query.duration))
+            return bundles
 
-        # 3) Fallback: title-only search when artist match failed.
-        #    This helps when YouTube Music metadata has multiple artists
-        #    (e.g. "Un Corazón, Kim Richards, Marco Barrientos") but LRCLIB
-        #    has the track under a simpler artist name.
+        # 3) Full-text search with the combined query — tolerant of residual
+        #    junk ("Canción - Artista - Playlist") and accent/case drift.
+        #    Artist/title still passed for row scoring.
+        if not bundles or not bundles[0].has_sync:
+            q_text = terms.get("search") or f"{query.artist} {query.title}".strip()
+            if q_text:
+                bundles.extend(await self._fetch_search(
+                    terms["artist"], terms["title"],
+                    None, query.isrc, q_text=q_text,
+                ))
+        if bundles and bundles[0].has_sync:
+            bundles.sort(key=self._rank_key(query.duration))
+            return bundles
+
+        # 4) Title-only search when the artist match failed (e.g. the tag
+        #    artist is the YouTube channel, not the real artist).
         if not bundles:
-            title_only = await self._fetch_broad(
-                "", terms["title"], terms["album"], query.isrc
-            )
-            if title_only:
-                bundles.append(title_only)
+            bundles.extend(await self._fetch_search(
+                "", terms["title"], None, query.isrc,
+            ))
 
         bundles.sort(key=self._rank_key(query.duration))
         return bundles
@@ -148,32 +168,96 @@ class LrclibProvider(BaseProvider):
             return None
         return self._build_bundle(data, query_duration_s=duration_s)
 
-    async def _fetch_broad(
+    async def _fetch_search(
         self,
         artist: str,
         title: str,
-        album: str,
+        duration_s: Optional[float],
         isrc: str,
-    ) -> Optional[LyricsBundle]:
-        if not title:
-            return None
-        params: dict[str, str] = {
-            "track_name": title,
-        }
-        if artist:
-            params["artist_name"] = artist
-        if album:
-            params["album_name"] = album
-        if isrc:
-            params["isrc"] = isrc
+        q_text: str = "",
+    ) -> list[LyricsBundle]:
+        """Tolerant search via ``/api/search``.
+
+        ``q_text`` switches to the full-text endpoint (``?q=``), which
+        matches compound/dirty titles that the filtered parameters cannot.
+        Rows are scored by artist/title similarity and duration proximity;
+        the best few are validated and returned as bundles.
+
+        The album is deliberately NOT sent as a filter: YouTube tags often
+        carry the album of a different edition, and it would exclude the
+        very row we are looking for.
+        """
+        if q_text:
+            params: dict[str, str] = {"q": q_text}
+        else:
+            if not title:
+                return []
+            params = {"track_name": title}
+            if artist:
+                params["artist_name"] = artist
+            if isrc:
+                params["isrc"] = isrc
 
         async with aiohttp.ClientSession() as session:
             data = await self._request_json(
-                session, f"{self.host}/api/get", params
+                session, f"{self.host}/api/search", params
             )
-        if not data:
-            return None
-        return self._build_bundle(data, query_duration_s=None)
+        if not isinstance(data, list) or not data:
+            return []
+
+        artist_norm = normalize_unicode(artist)
+        title_norm = normalize_unicode(title)
+        scored = sorted(
+            data,
+            key=lambda row: self._row_score(
+                row, artist_norm, title_norm, duration_s
+            ),
+            reverse=True,
+        )
+        bundles: list[LyricsBundle] = []
+        seen_sources: set[str] = set()
+        for row in scored[:5]:
+            bundle = self._build_bundle(row, query_duration_s=duration_s)
+            if bundle is None or bundle.source in seen_sources:
+                continue
+            seen_sources.add(bundle.source)
+            bundles.append(bundle)
+            if len(bundles) >= 3:
+                break
+        return bundles
+
+    @staticmethod
+    def _row_score(
+        row: dict,
+        artist_norm: str,
+        title_norm: str,
+        duration_s: Optional[float],
+    ) -> float:
+        """Rank a search row: exact artist/title beat partial matches."""
+        score = 0.0
+        row_artist = normalize_unicode(row.get("artistName") or "")
+        row_title = normalize_unicode(
+            row.get("trackName") or row.get("name") or ""
+        )
+        if artist_norm:
+            if row_artist == artist_norm:
+                score += 2.0
+            elif artist_norm in row_artist or row_artist in artist_norm:
+                score += 1.0
+        if title_norm:
+            if row_title == title_norm:
+                score += 2.0
+            elif title_norm in row_title or row_title in title_norm:
+                score += 1.0
+        if duration_s and row.get("duration") is not None:
+            try:
+                if abs(float(row["duration"]) - duration_s) <= 3.0:
+                    score += 0.5
+            except (TypeError, ValueError):
+                pass
+        if row.get("syncedLyrics"):
+            score += 0.25
+        return score
 
     # ------------------------------------------------------------------
     # Result building

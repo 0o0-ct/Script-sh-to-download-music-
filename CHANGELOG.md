@@ -50,6 +50,29 @@
   `NOTE_NO_SIGNIFICANT`, `NOTE_UNRELIABLE`, `NOTE_EXCEEDS_DURATION`): la
   primera ocurrencia se imprime, todas se cuentan, y al final aparece un
   bloque «Auto-corrección de letras (resumen)» con el conteo por nota.
+- **El adaptador de LRCLIB solo usaba el endpoint de coincidencia exacta.**
+  `/api/get` exige título y artista idénticos al registro: con títulos de
+  YouTube compuestos («Canción - Artista - Playlist»), mayúsculas distintas
+  («DESCALZOS» vs «Descalzos») o acentos que difieren del tag («Pablo
+  Martinez» vs «Pablo Martínez»), la letra existía en LRCLIB y no se
+  encontraba. Ahora tras el get exacto busca por `/api/search` en tres
+  pasos (filtrada → texto completo `q=` → solo título), puntuando las
+  filas por parecido de artista/título y cercanía de duración, y validando
+  las mejores igual que antes. Verificado contra LRCLIB real: 4/4 copias
+  de pistas sin letra recuperadas.
+- **Tags de álbum basura anulaban la búsqueda exacta.** Con álbum «NA» o
+  «Unknown», `/api/get?album_name=NA` devolvía 404 para pistas que sí
+  existen (álbum real «Qaos»). `build_query_terms` descarta ahora esos
+  placeholders y la búsqueda tolerante no filtra por álbum (el álbum del
+  tag suele ser de otra edición y excluye la fila buscada).
+- **El artista incrustado en el título bloqueaba la consulta.** Patrones
+  «24/7 - Aldana Canale», «Un Paso A La Vez - Aldana Canale - Oración para
+  momentos difíciles» (artista en medio + nombre de playlist pegado) y
+  «Pablo Martínez - Tarde te amé» (el tag de artista sin acento no
+  coincidía con el título). Nueva `strip_artist_from_title()`: quita el
+  artista como prefijo, sufijo o segmento medio, y descarta lo que venga
+  después (contexto del canal/playlist), comparando sin acentos ni
+  mayúsculas.
 
 ### Added
 

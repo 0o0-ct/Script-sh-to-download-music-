@@ -566,6 +566,89 @@ def _bundle_matches_query(bundle: LyricsBundle, query: SongQuery) -> bool:
     return True
 
 
+# Version suffixes that should penalize a bundle when the canonical title
+# does NOT contain them.  These indicate a different recording variant.
+_VERSION_SUFFIXES_PENALIZE = [
+    "live",
+    "acoustic",
+    "remix",
+    "cover",
+    "piano",
+    "guitar",
+    "orchestral",
+    "karaoke",
+    "instrumental",
+    "a cappella",
+    "acapella",
+    "medley",
+    "unplugged",
+    "radio edit",
+    "extended",
+    "dj mix",
+    "club mix",
+]
+
+# Suffixes that are harmless YouTube noise — they don't indicate a different
+# recording, just metadata about the video.  These are ignored by the
+# version-suffix penalty.
+_HARMLESS_SUFFIXES = [
+    "official video",
+    "official audio",
+    "lyric video",
+    "official music video",
+    "4k",
+    "hd",
+    "hq",
+    "4k audio",
+    "visualizer",
+    "audio oficial",
+    "video oficial",
+]
+
+
+def _version_suffix_penalty(bundle_title: str, canonical_title: str) -> float:
+    """Return a penalty factor (0.0–1.0) for unprompted version suffixes.
+
+    If the bundle title contains a version suffix (e.g. "Live", "Remix",
+    "Acoustic") that is NOT present in the canonical title, the factor
+    drops below 1.0 to penalize the score.  Harmless suffixes like
+    "Official Video" or "[4K]" are ignored.
+
+    Returns 1.0 when no penalty applies.
+    """
+    if not bundle_title or not canonical_title:
+        return 1.0
+
+    # For suffix matching we need a normalized form that keeps spaces
+    # so multi-word suffixes like "a cappella", "radio edit", "dj mix"
+    # can still be detected.  _normalize_match_text strips spaces, so
+    # we use a simpler normalization here.
+    def _normalize_for_suffix(text: str) -> str:
+        decomposed = unicodedata.normalize("NFKD", text).casefold()
+        return "".join(
+            ch for ch in decomposed
+            if not unicodedata.combining(ch) and (ch.isalnum() or ch == " ")
+        )
+
+    bt_lower = _normalize_for_suffix(bundle_title)
+    ct_lower = _normalize_for_suffix(canonical_title)
+
+    # Skip harmless suffixes from the penalty check — strip them first
+    bt_stripped = bt_lower
+    for harmless in _HARMLESS_SUFFIXES:
+        bt_stripped = bt_stripped.replace(harmless, "")
+    # Also strip common bracket/parenthesis noise
+    bt_stripped = bt_stripped.strip(" []()")
+
+    penalty = 1.0
+    for suffix in _VERSION_SUFFIXES_PENALIZE:
+        # Check if the suffix appears in the bundle title but NOT in canonical
+        if suffix in bt_stripped and suffix not in ct_lower:
+            penalty *= 0.7  # 30% penalty per unprompted suffix
+
+    return penalty
+
+
 def _score_bundle(
     bundle: LyricsBundle,
     canonical_title: str,
@@ -581,6 +664,7 @@ def _score_bundle(
         - Artist similarity: 30%
         - Duration match: 20%
         - Sync level: 10%
+        - Version suffix penalty: multiplicative (0.7 per unprompted suffix)
     """
     if not canonical_title and not canonical_artist:
         return bundle.confidence
@@ -633,12 +717,17 @@ def _score_bundle(
     sync_map = {"word": 1.0, "line": 0.7, "plain": 0.3, "instrumental": 0.0, "none": 0.0}
     sync_score = sync_map.get(bundle.kind, 0.0)
 
+    # Version suffix penalty — penalize bundles that have unprompted
+    # version markers (Live, Remix, Acoustic, Cover, etc.)
+    version_penalty = _version_suffix_penalty(bundle.title, canonical_title)
+
     combined = (
         title_score * 0.40
         + artist_score * 0.30
         + duration_score * 0.20
         + sync_score * 0.10
     )
+    combined *= version_penalty
     return round(combined, 4)
 
 

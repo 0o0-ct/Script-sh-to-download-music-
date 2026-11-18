@@ -384,7 +384,26 @@ async def _search_cascade(
     """
     # --- Cache lookup --------------------------------------------------
     if cache is not None:
-        cached = cache.get(query.artist, query.title, None, query.isrc)
+        # Try fingerprint-based lookup when ISRC is not available
+        fingerprint = ""
+        if not query.isrc and hasattr(cache, "get_with_fingerprint"):
+            # Compute fingerprint from audio file if path is available
+            audio_path = getattr(query, "audio_path", None)
+            if audio_path:
+                try:
+                    from otterrip_core.audio_fingerprint import compute_fingerprint
+                    fp = compute_fingerprint(audio_path)
+                    if fp:
+                        fingerprint = fp
+                except Exception:
+                    pass  # Fingerprint is optional
+
+        if hasattr(cache, "get_with_fingerprint"):
+            cached = cache.get_with_fingerprint(
+                query.artist, query.title, None, query.isrc, fingerprint
+            )
+        else:
+            cached = cache.get(query.artist, query.title, None, query.isrc)
         if cached is not None:
             # Re-hydrate bundle from cached dict.
             bundle = LyricsBundle(
@@ -524,12 +543,26 @@ async def _search_cascade(
                     "confidence": tmp.confidence,
                     "warnings": tmp.warnings,
                 }
+            # Compute fingerprint for cache key when ISRC is not available
+            cache_fingerprint = ""
+            if not query.isrc:
+                audio_path = getattr(query, "audio_path", None)
+                if audio_path:
+                    try:
+                        from otterrip_core.audio_fingerprint import compute_fingerprint
+                        fp = compute_fingerprint(audio_path)
+                        if fp:
+                            cache_fingerprint = fp
+                    except Exception:
+                        pass  # Fingerprint is optional
+
             cache.set(
                 query.artist,
                 query.title,
                 cache_payload,
                 duration_ms=cache_payload["audio_duration_ms"],
                 isrc=query.isrc,
+                fingerprint=cache_fingerprint,
             )
         logger.info(
             "letra encontrada: %s - %s | kind=%s | conf=%.2f | source=%s",
@@ -1000,6 +1033,7 @@ async def _process_file(
         isrc=isrc,
         language=lang,
         prefer_synced=prefer_synced,
+        audio_path=str(fpath),
     )
 
     best = await _search_cascade(

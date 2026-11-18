@@ -21,6 +21,7 @@ class SongQuery:
     language: str = ""
     video_id: str = ""
     prefer_synced: bool = True
+    audio_path: Optional[str] = None
 
 
 class BaseProvider(ABC):

@@ -2,8 +2,8 @@
 """Local query cache for lyric lookups.
 
 Key: artist + title + duration + ISRC + fingerprint.  Value: serialised
-LyricsBundle dict.  Persisted as JSON under a cache directory so repeated
-lookups for the same track do not hit the network.
+LyricsBundle dict.  Persisted in SQLite (StateDB) so repeated lookups
+for the same track do not hit the network.
 
 ISRC is optional; when not available the key falls back to an acoustic
 fingerprint (computed from the audio file) to avoid collisions between
@@ -14,11 +14,12 @@ backward compatibility.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import time
 from pathlib import Path
 from typing import Optional
+
+from otterrip_core.state_db import StateDB
 
 
 def _cache_key(
@@ -45,8 +46,16 @@ def _cache_key(
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
+def _get_db() -> StateDB:
+    """Return a StateDB instance from OTTERRIP_STATE_DIR."""
+    state_dir = os.environ.get("OTTERRIP_STATE_DIR", "")
+    if not state_dir:
+        raise RuntimeError("OTTERRIP_STATE_DIR not set")
+    return StateDB(state_dir)
+
+
 class LyricsCache:
-    """Simple filesystem cache keyed by (artist, title, duration, ISRC, fingerprint).
+    """Lyrics cache backed by StateDB (SQLite).
 
     When ISRC is not available, an acoustic fingerprint may be used as a
     fallback to distinguish recordings that share the same title and artist.
@@ -54,32 +63,18 @@ class LyricsCache:
 
     def __init__(self, cache_dir: str | Path, ttl_seconds: int = 604800):
         self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.ttl_seconds = ttl_seconds
+        # Ensure OTTERRIP_STATE_DIR is set so StateDB can be initialised.
+        # Fall back to the cache_dir parent if the env var is not set.
+        if not os.environ.get("OTTERRIP_STATE_DIR"):
+            os.environ["OTTERRIP_STATE_DIR"] = str(self.cache_dir.parent)
+        self._db: Optional[StateDB] = None
 
-    def _path(self, key: str) -> Path:
-        return self.cache_dir / f"{key}.json"
-
-    def _read_entry(self, key: str) -> Optional[dict]:
-        """Read and validate a single cache entry by key.
-
-        Returns the bundle dict or None if missing / expired / corrupt.
-        """
-        p = self._path(key)
-        if not p.is_file():
-            return None
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return None
-        ts = data.get("cached_at", 0)
-        if ts and (time.time() - ts) > self.ttl_seconds:
-            try:
-                p.unlink()
-            except OSError:
-                pass
-            return None
-        return data.get("bundle")
+    @property
+    def db(self) -> StateDB:
+        if self._db is None:
+            self._db = _get_db()
+        return self._db
 
     def get(
         self,
@@ -95,7 +90,7 @@ class LyricsCache:
         legacy (artist, title, duration) key for backward compatibility.
         """
         key = _cache_key(artist, title, duration_ms, isrc, fingerprint)
-        return self._read_entry(key)
+        return self.db.lyrics_cache_get(key, ttl_seconds=self.ttl_seconds)
 
     def get_with_fingerprint(
         self,
@@ -132,29 +127,14 @@ class LyricsCache:
         isrc: str = "",
         fingerprint: str = "",
     ) -> None:
-        """Serialise and store a bundle dict.
+        """Store a bundle dict in the SQLite cache.
 
         Stores under the most specific key available: ISRC > fingerprint > legacy.
         """
         key = _cache_key(artist, title, duration_ms, isrc, fingerprint)
-        p = self._path(key)
-        payload = {
-            "cached_at": time.time(),
-            "bundle": bundle,
-            "keyed_by": "isrc" if isrc else ("fingerprint" if fingerprint else "legacy"),
-        }
-        try:
-            p.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        except OSError:
-            pass  # Cache failure is non-fatal.
+        keyed_by = "isrc" if isrc else ("fingerprint" if fingerprint else "legacy")
+        self.db.lyrics_cache_set(key, bundle, keyed_by=keyed_by)
 
     def clear(self) -> int:
-        """Remove all cache files.  Returns number of files deleted."""
-        count = 0
-        for p in self.cache_dir.glob("*.json"):
-            try:
-                p.unlink()
-                count += 1
-            except OSError:
-                pass
-        return count
+        """Remove all cache entries.  Returns number of entries deleted."""
+        return self.db.lyrics_cache_clear()

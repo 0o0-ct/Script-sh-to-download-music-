@@ -26,6 +26,7 @@ from otterrip_core import repair
 from otterrip_core import convert
 from otterrip_core import lyrics_verify
 from otterrip_core import lyrics_overrides
+from otterrip_core import state_db
 
 
 def positive_int(value: str) -> int:
@@ -179,6 +180,55 @@ def build_parser() -> argparse.ArgumentParser:
     p_retry = q_sub.add_parser("retry")
     p_retry.add_argument("ids", nargs="+")
     q_sub.add_parser("clear-done")
+    p_renew = q_sub.add_parser("renew-lease")
+    p_renew.add_argument("task_id")
+    p_renew.add_argument("--lease-seconds", type=int, default=300)
+
+    # --- state-db (CLI bridge for SQLite backend) ---
+    p_sdb = sub.add_parser("state-db", help="State database operations")
+    sdb_sub = p_sdb.add_subparsers(dest="state_db_cmd")
+
+    # state-db history
+    p_sdb_hist = sdb_sub.add_parser("history")
+    hist_sub = p_sdb_hist.add_subparsers(dest="history_cmd")
+    p_hist_append = hist_sub.add_parser("append")
+    p_hist_append.add_argument("url")
+    p_hist_append.add_argument("title")
+    p_hist_append.add_argument("dest")
+    p_hist_append.add_argument("status")
+    p_hist_append.add_argument("duration", type=int, default=0)
+    p_hist_list = hist_sub.add_parser("list")
+    p_hist_list.add_argument("--max", type=int, default=50)
+    p_hist_clear = hist_sub.add_parser("clear")
+    p_hist_clear.add_argument("--mode", default="all")
+    hist_sub.add_parser("count")
+
+    # state-db lyrics-cache
+    p_sdb_lrc = sdb_sub.add_parser("lyrics-cache")
+    lrc_sub = p_sdb_lrc.add_subparsers(dest="lyrics_cache_cmd")
+    p_lrc_get = lrc_sub.add_parser("get")
+    p_lrc_get.add_argument("key")
+    p_lrc_set = lrc_sub.add_parser("set")
+    p_lrc_set.add_argument("key")
+    p_lrc_set.add_argument("bundle_json")
+    p_lrc_set.add_argument("--keyed-by", default="legacy")
+    lrc_sub.add_parser("clear")
+
+    # state-db metadata-cache
+    p_sdb_meta = sdb_sub.add_parser("metadata-cache")
+    meta_sub = p_sdb_meta.add_subparsers(dest="metadata_cache_cmd")
+    p_meta_get = meta_sub.add_parser("get")
+    p_meta_get.add_argument("key")
+    p_meta_set = meta_sub.add_parser("set")
+    p_meta_set.add_argument("key")
+    p_meta_set.add_argument("data_json")
+    meta_sub.add_parser("clear")
+
+    # state-db migrate
+    sdb_sub.add_parser("migrate")
+
+    # state-db backup
+    sdb_sub.add_parser("backup")
 
     # --- library ---
     p = sub.add_parser("library", help="Music library tools")
@@ -258,7 +308,111 @@ COMMAND_MAP = {
     "convert": convert.run_convert,
     "lyrics-manage": lyrics_verify.run_lyrics_manage,
     "lyrics-overrides": lyrics_overrides.run_lyrics_overrides,
+    "state-db": None,  # handled inline
 }
+
+
+def _run_state_db(args) -> int:
+    """Handle state-db subcommands."""
+    import json as _json
+    import shutil as _shutil
+    import os as _os
+
+    cmd = getattr(args, "state_db_cmd", None)
+    if not cmd:
+        print("Usage: state-db {history|lyrics-cache|metadata-cache|migrate|backup}")
+        return 1
+
+    state_dir = _os.environ.get("OTTERRIP_STATE_DIR", "")
+    if not state_dir:
+        print("Error: OTTERRIP_STATE_DIR not set", file=sys.stderr)
+        return 1
+
+    db = state_db.StateDB(state_dir)
+
+    if cmd == "history":
+        sub = getattr(args, "history_cmd", None)
+        if sub == "append":
+            rid = db.history_append(args.url, args.title, args.dest, args.status, args.duration)
+            print(rid)
+            return 0
+        elif sub == "list":
+            entries = db.history_list(max_rows=args.max)
+            for e in entries:
+                print(_json.dumps(e, ensure_ascii=False))
+            return 0
+        elif sub == "clear":
+            count = db.history_clear(mode=args.mode)
+            print(count)
+            return 0
+        elif sub == "count":
+            print(db.history_count())
+            return 0
+        else:
+            print("Usage: state-db history {append|list|clear|count}")
+            return 1
+
+    elif cmd == "lyrics-cache":
+        sub = getattr(args, "lyrics_cache_cmd", None)
+        if sub == "get":
+            result = db.lyrics_cache_get(args.key)
+            if result is not None:
+                print(_json.dumps(result, ensure_ascii=False))
+                return 0
+            return 1
+        elif sub == "set":
+            bundle = _json.loads(args.bundle_json)
+            keyed_by = getattr(args, "keyed_by", "legacy") or "legacy"
+            db.lyrics_cache_set(args.key, bundle, keyed_by=keyed_by)
+            return 0
+        elif sub == "clear":
+            count = db.lyrics_cache_clear()
+            print(count)
+            return 0
+        else:
+            print("Usage: state-db lyrics-cache {get|set|clear}")
+            return 1
+
+    elif cmd == "metadata-cache":
+        sub = getattr(args, "metadata_cache_cmd", None)
+        if sub == "get":
+            result = db.metadata_cache_get(args.key)
+            if result is not None:
+                print(_json.dumps(result, ensure_ascii=False))
+                return 0
+            return 1
+        elif sub == "set":
+            data = _json.loads(args.data_json)
+            db.metadata_cache_set(args.key, data)
+            return 0
+        elif sub == "clear":
+            count = db.metadata_cache_clear()
+            print(count)
+            return 0
+        else:
+            print("Usage: state-db metadata-cache {get|set|clear}")
+            return 1
+
+    elif cmd == "migrate":
+        # Migration runs automatically on StateDB init; this is a no-op trigger
+        print("Migration already applied on init.")
+        return 0
+
+    elif cmd == "backup":
+        db_path = _os.path.join(state_dir, "state.db")
+        if not _os.path.exists(db_path):
+            print("No state.db to backup.", file=sys.stderr)
+            return 1
+        import time as _time
+        ts = _time.strftime("%Y%m%d_%H%M%S")
+        backup_path = f"{db_path}.bak.{ts}"
+        _shutil.copy2(db_path, backup_path)
+        print(f"Backup created: {backup_path}")
+        return 0
+
+    else:
+        print(f"Unknown state-db command: {cmd}", file=sys.stderr)
+        return 1
 
 
 def main() -> int:
@@ -270,6 +424,11 @@ def main() -> int:
         return 1
 
     handler = COMMAND_MAP.get(args.command)
+
+    # Inline handler for state-db
+    if args.command == "state-db":
+        return _run_state_db(args)
+
     if handler is None:
         print(f"Unknown command: {args.command}", file=sys.stderr)
         return 1

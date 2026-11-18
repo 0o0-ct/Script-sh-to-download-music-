@@ -223,9 +223,14 @@ class TestLrcCache(unittest.TestCase):
     def test_get_set(self):
         import tempfile
         import os
+        import shutil
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cache = LyricsCache(tmpdir)
+        tmpdir = tempfile.mkdtemp()
+        try:
+            state_dir = os.path.join(tmpdir, "state")
+            os.makedirs(state_dir)
+            os.environ["OTTERRIP_STATE_DIR"] = state_dir
+            cache = LyricsCache(os.path.join(tmpdir, "cache"))
             bundle = {
                 "kind": "line", "lrc": "[00:01.00] line", "plain": None,
                 "lines": [(1000, "line")], "source": "lrclib",
@@ -235,3 +240,7 @@ class TestLrcCache(unittest.TestCase):
             retrieved = cache.get("Artist", "Title", 100000)
             self.assertIsNotNone(retrieved)
             self.assertEqual(retrieved["kind"], "line")
+        finally:
+            if "OTTERRIP_STATE_DIR" in os.environ:
+                del os.environ["OTTERRIP_STATE_DIR"]
+            shutil.rmtree(tmpdir, ignore_errors=True)

@@ -164,6 +164,16 @@ class TestLyricsCacheFingerprint:
     """Test LyricsCache with fingerprint support."""
 
     def _make_cache(self, tmp_path: Path) -> LyricsCache:
+        # Each test gets its own state dir to isolate SQLite DB
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(exist_ok=True)
+        import os
+        os.environ["OTTERRIP_STATE_DIR"] = str(state_dir)
+        # Clear any previous entries
+        from otterrip_core.state_db import StateDB
+        db = StateDB(str(state_dir))
+        db.lyrics_cache_clear()
+        db.close()
         return LyricsCache(str(tmp_path / "cache"))
 
     def _make_bundle(self) -> dict:
@@ -251,13 +261,17 @@ class TestLyricsCacheFingerprint:
         # Store legacy
         cache.set("E", "F", bundle, 3000)
 
-        # Check the keyed_by field in stored entries
-        entries = list(cache.cache_dir.glob("*.json"))
-        assert len(entries) == 3
-        for entry in entries:
-            data = json.loads(entry.read_text())
-            assert "keyed_by" in data
-            assert data["keyed_by"] in ("isrc", "fingerprint", "legacy")
+        # Check entries exist in SQLite
+        from otterrip_core.state_db import StateDB
+        import os
+        db = StateDB(os.environ["OTTERRIP_STATE_DIR"])
+        rows = db._conn.execute("SELECT keyed_by FROM lyrics_cache").fetchall()
+        db.close()
+        assert len(rows) == 3
+        keyed_by_values = [r["keyed_by"] for r in rows]
+        assert "isrc" in keyed_by_values
+        assert "fingerprint" in keyed_by_values
+        assert "legacy" in keyed_by_values
 
     def test_clear_removes_all(self, tmp_path: Path):
         """Clear removes all cache entries regardless of key type."""

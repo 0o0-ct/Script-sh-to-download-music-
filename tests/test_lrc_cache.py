@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Unit tests for otterrip_core.lrc_cache module."""
-import json
+"""Unit tests for otterrip_core.lrc_cache module (SQLite backend)."""
 import os
+import shutil
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 # Ensure lib is on the path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
 from otterrip_core.lrc_cache import LyricsCache, _cache_key
+from otterrip_core.state_db import StateDB
 
 
 class TestCacheKey(unittest.TestCase):
@@ -44,14 +44,20 @@ class TestCacheKey(unittest.TestCase):
 
 
 class TestLyricsCache(unittest.TestCase):
-    """Test LyricsCache class."""
+    """Test LyricsCache class with SQLite backend."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
+        os.environ["OTTERRIP_STATE_DIR"] = self.tmpdir
         self.cache = LyricsCache(self.tmpdir, ttl_seconds=604800)
+        self.db = StateDB(self.tmpdir)
 
     def tearDown(self):
         self.cache.clear()
+        if "OTTERRIP_STATE_DIR" in os.environ:
+            del os.environ["OTTERRIP_STATE_DIR"]
+        self.db.close()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_set_and_get(self):
         bundle = {"synced": "[00:00.000] Hello", "provider": "lrclib"}
@@ -67,29 +73,28 @@ class TestLyricsCache(unittest.TestCase):
     def test_ttl_expiration(self):
         """Entries older than TTL should not be returned."""
         bundle = {"text": "old lyrics"}
+        self.cache.set("Artist", "Title", bundle, duration_ms=180000)
+        # Manually expire the entry
         key = _cache_key("Artist", "Title", 180000)
-        path = self.cache._path(key)
-        # Write an entry with a very old timestamp
-        old_time = time.time() - 999999  # far in the past
-        payload = {"cached_at": old_time, "bundle": bundle, "keyed_by": "legacy"}
-        path.write_text(json.dumps(payload), encoding="utf-8")
-        # With default TTL (604800 seconds), this should be expired
+        self.db._conn.execute(
+            "UPDATE lyrics_cache SET cached_at = ? WHERE key = ?",
+            (time.time() - 999999, key),
+        )
+        self.db._conn.commit()
         result = self.cache.get("Artist", "Title", duration_ms=180000)
         self.assertIsNone(result)
-        # The expired file should be removed
-        self.assertFalse(path.exists())
 
     def test_time_persistence(self):
         """cached_at should use time.time() which persists across process restarts."""
         bundle = {"text": "persistent lyrics"}
         self.cache.set("Artist", "Title", bundle, duration_ms=180000)
         key = _cache_key("Artist", "Title", 180000)
-        path = self.cache._path(key)
-        data = json.loads(path.read_text(encoding="utf-8"))
-        cached_at = data["cached_at"]
-        # cached_at should be close to current wall-clock time, not CPU time
+        row = self.db._conn.execute(
+            "SELECT cached_at FROM lyrics_cache WHERE key = ?", (key,)
+        ).fetchone()
+        cached_at = row["cached_at"]
         now = time.time()
-        self.assertAlmostEqual(cached_at, now, delta=5)  # within 5 seconds
+        self.assertAlmostEqual(cached_at, now, delta=5)
 
     def test_get_with_isrc(self):
         bundle = {"synced": "[00:00.000] ISRC lyrics"}
@@ -111,21 +116,18 @@ class TestLyricsCache(unittest.TestCase):
         self.assertIsNone(self.cache.get("Artist1", "Title1", duration_ms=100))
         self.assertIsNone(self.cache.get("Artist2", "Title2", duration_ms=200))
 
-    def test_corrupt_entry_returns_none(self):
-        """A corrupt JSON file should not crash the cache."""
-        key = _cache_key("Artist", "Title", 180000)
-        path = self.cache._path(key)
-        path.write_text("not valid json {{{", encoding="utf-8")
-        result = self.cache.get("Artist", "Title", duration_ms=180000)
-        self.assertIsNone(result)
-
     def test_ttl_short_expiration(self):
         """Test with a very short TTL to verify expiration logic."""
-        short_cache = LyricsCache(self.tmpdir + "/short", ttl_seconds=0)
-        short_cache.cache_dir.mkdir(parents=True, exist_ok=True)
+        short_cache = LyricsCache(self.tmpdir, ttl_seconds=1)
         bundle = {"text": "expires instantly"}
         short_cache.set("Artist", "Title", bundle, duration_ms=180000)
-        # With TTL=0, any entry should be expired immediately
+        # Manually expire
+        key = _cache_key("Artist", "Title", 180000)
+        self.db._conn.execute(
+            "UPDATE lyrics_cache SET cached_at = ? WHERE key = ?",
+            (time.time() - 10, key),
+        )
+        self.db._conn.commit()
         result = short_cache.get("Artist", "Title", duration_ms=180000)
         self.assertIsNone(result)
 

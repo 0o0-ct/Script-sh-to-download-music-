@@ -35,7 +35,7 @@ readonly YTDLP_MIN_VERSION="2024.02.01" # Versión mínima de yt-dlp (YouTube ca
 # de forma silenciosa ni deja procesos huérfanos a medias.
 trap '' PIPE
 
-OTTERRIP_VERSION="7.3.5"
+OTTERRIP_VERSION="7.4.0"
 OTTERRIP_REPO="0o0-ct/Script-sh-to-download-music-"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
@@ -3486,8 +3486,7 @@ fix_metadata_batch() {
     return 0
 }
 
-# Registra una descarga en el historial consultable (TSV).
-# Columnas: timestamp, url, title, dest, status, duration_secs
+# Registra una descarga en el historial consultable (SQLite).
 # @brief Registra una descarga en el historial consultable.
 # @param $1 URL descargada.
 # @param $2 Título de la pista o colección.
@@ -3495,64 +3494,59 @@ fix_metadata_batch() {
 # @param $4 Estado final (ok|partial|failed|cancelled).
 # @param $5 Duración en segundos.
 # @return 0 siempre.
-# @side-effects Añade una línea a $OTTERRIP_DATA_DIR/history.tsv.
+# @side-effects Añade una fila a state.db (tabla history).
 append_history() {
     local url="${1-}" title="${2-}" dest="${3-}" status="${4-}" duration="${5-0}"
-    local file="$OTTERRIP_DATA_DIR/history.tsv" field=""
-    [[ -d "$OTTERRIP_DATA_DIR" ]] || mkdir -p -- "$OTTERRIP_DATA_DIR" 2>/dev/null || return 0
-    is_private_dir "$OTTERRIP_DATA_DIR" || return 0
     [[ "$duration" =~ ^[0-9]+$ ]] || duration=0
     # Los campos no pueden contener tabuladores ni saltos de línea.
     url="${url//$'\t'/ }"; url="${url//$'\n'/ }"
     title="${title//$'\t'/ }"; title="${title//$'\n'/ }"
     dest="${dest//$'\t'/ }"; dest="${dest//$'\n'/ }"
     status="${status//$'\t'/ }"; status="${status//$'\n'/ }"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$(date '+%Y-%m-%d %H:%M:%S')" "$url" "$title" "$dest" "$status" "$duration" \
-        >> "$file" 2>/dev/null || true
+    py_core state-db history append "$url" "$title" "$dest" "$status" "$duration" >/dev/null 2>&1 || true
     return 0
 }
 
-# Muestra el historial de descargas (últimas entradas).
+# Muestra el historial de descargas (últimas entradas, desde SQLite).
 # @brief Muestra el historial de descargas.
 # @param $1 Número máximo de entradas a mostrar (por defecto 50).
 # @return 0 siempre.
 # @side-effects Ninguno (solo lectura).
 show_history() {
-    local file="$OTTERRIP_DATA_DIR/history.tsv" max="${1:-50}" n=0 line=""
-    if [[ ! -f "$file" ]]; then
+    local max="${1:-50}" n=0
+    local output
+    output=$(py_core state-db history list --max "$max" 2>/dev/null) || {
         msg_info "Todavía no hay descargas registradas en el historial."
         return 0
-    fi
+    }
+    [[ -z "$output" ]] && { msg_info "Todavía no hay descargas registradas en el historial."; return 0; }
     echo -e "${BOLD}${CYAN}══ Historial de descargas ══${NC}\n"
     printf '  %s%-19s %-28s %-10s %-8s %s%s\n' "$BOLD" "FECHA" "URL" "ESTADO" "DURACIÓN" "DESTINO" "$NC"
-    while IFS=$'\t' read -r ts url title dest status dur; do
-        [[ -z "${ts:-}" ]] && continue
-        printf '  %-19s %-28s %-10s %-8s %s\n' \
-            "${ts:0:19}" "${url:0:28}" "${status:0:10}" "${dur:-0}s" "${dest:0:60}"
+    while IFS= read -r line; do
+        # Parse JSON lines: extract fields
+        local ts url status dur dest
+        ts=$(echo "$line" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('timestamp','')[:19])" 2>/dev/null) || continue
+        url=$(echo "$line" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('url','')[:28])" 2>/dev/null) || continue
+        status=$(echo "$line" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','')[:10])" 2>/dev/null) || continue
+        dur=$(echo "$line" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('duration',0))" 2>/dev/null) || continue
+        dest=$(echo "$line" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('dest','')[:60])" 2>/dev/null) || continue
+        printf '  %-19s %-28s %-10s %-8s %s\n' "${ts:0:19}" "${url:0:28}" "${status:0:10}" "${dur:-0}s" "${dest:0:60}"
         n=$((n + 1))
-        (( n >= max )) && break
-    done < "$file"
+    done <<< "$output"
     echo ""
     printf '  %sTotal de entradas: %s%s\n' "$DIM" "$n" "$NC"
     return 0
 }
 
-# Limpia el historial de descargas.
+# Limpia el historial de descargas (SQLite).
 # @brief Limpia el historial de descargas.
 # @param $1 Modo: "all" (todo), "failed" (solo fallidas), "partial" (solo parciales).
 # @return 0 siempre.
-# @side-effects Modifica o borra $OTTERRIP_DATA_DIR/history.tsv.
+# @side-effects Modifica state.db (tabla history).
 clear_history() {
     local mode="${1:-all}"
-    local file="$OTTERRIP_DATA_DIR/history.tsv"
-    if [[ ! -f "$file" ]]; then
-        msg_info "El historial ya está vacío."
-        return 0
-    fi
     local total
-    total=$(wc -l < "$file" 2>/dev/null || echo 0)
-    total=$(echo "$total" | tr -d ' ')
+    total=$(py_core state-db history count 2>/dev/null) || total=0
     (( total == 0 )) && { msg_info "El historial ya está vacío."; return 0; }
 
     case "$mode" in
@@ -3565,45 +3559,24 @@ clear_history() {
                 msg_info "Operación cancelada."
                 return 0
             fi
-            : > "$file"
-            msg_ok "Historial limpiado: $total entradas eliminadas."
+            local removed
+            removed=$(py_core state-db history clear --mode all 2>/dev/null) || removed=0
+            msg_ok "Historial limpiado: $removed entradas eliminadas."
             ;;
         failed)
-            local tmp
-            tmp=$(mktemp) || return 1
-            local kept=0 removed=0
-            while IFS=$'\t' read -r ts url title dest status dur; do
-                [[ -z "${ts:-}" ]] && continue
-                if [[ "$status" == "failed" ]]; then
-                    removed=$((removed + 1))
-                else
-                    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$ts" "$url" "$title" "$dest" "$status" "$dur" >> "$tmp"
-                    kept=$((kept + 1))
-                fi
-            done < "$file"
-            mv -- "$tmp" "$file"
+            local removed
+            removed=$(py_core state-db history clear --mode failed 2>/dev/null) || removed=0
             if (( removed > 0 )); then
-                msg_ok "Entradas fallidas eliminadas: $removed (conservadas: $kept)."
+                msg_ok "Entradas fallidas eliminadas: $removed."
             else
                 msg_info "No había entradas fallidas en el historial."
             fi
             ;;
         partial)
-            local tmp
-            tmp=$(mktemp) || return 1
-            local kept=0 removed=0
-            while IFS=$'\t' read -r ts url title dest status dur; do
-                [[ -z "${ts:-}" ]] && continue
-                if [[ "$status" == "partial" ]]; then
-                    removed=$((removed + 1))
-                else
-                    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$ts" "$url" "$title" "$dest" "$status" "$dur" >> "$tmp"
-                    kept=$((kept + 1))
-                fi
-            done < "$file"
-            mv -- "$tmp" "$file"
+            local removed
+            removed=$(py_core state-db history clear --mode partial 2>/dev/null) || removed=0
             if (( removed > 0 )); then
-                msg_ok "Entradas parciales eliminadas: $removed (conservadas: $kept)."
+                msg_ok "Entradas parciales eliminadas: $removed."
             else
                 msg_info "No había entradas parciales en el historial."
             fi
@@ -3623,20 +3596,21 @@ clear_history() {
 # @return 0 siempre.
 # @side-effects Borra archivos .otterrip_archive en carpetas de destino.
 clear_download_archives() {
-    local file="$OTTERRIP_DATA_DIR/history.tsv"
-    if [[ ! -f "$file" ]]; then
+    # Extraer destinos únicos del historial (SQLite)
+    local -A dests
+    local output
+    output=$(py_core state-db history list --max 99999 2>/dev/null) || {
         msg_info "No hay historial de descargas."
         return 0
-    fi
+    }
+    [[ -z "$output" ]] && { msg_info "No hay historial de descargas."; return 0; }
 
-    # Extraer destinos únicos del historial
-    local -A dests
-    local count=0
-    while IFS=$'\t' read -r ts url title dest status dur; do
-        [[ -z "${dest:-}" ]] && continue
+    while IFS= read -r line; do
+        local dest
+        dest=$(echo "$line" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('dest',''))" 2>/dev/null) || continue
+        [[ -z "$dest" ]] && continue
         dests["$dest"]=1
-        count=$((count + 1))
-    done < "$file"
+    done <<< "$output"
 
     local unique=${#dests[@]}
     if (( unique == 0 )); then
@@ -3683,17 +3657,13 @@ clear_download_archives() {
 # Submenú de gestión del historial de descargas.
 # @brief Muestra el submenú de gestión del historial.
 # @return 0 siempre.
-# @side-effects Puede modificar history.tsv o archivos .otterrip_archive.
+# @side-effects Puede modificar state.db o archivos .otterrip_archive.
 menu_history() {
     clear_screen
     echo -e "${BOLD}${CYAN}══ Historial de descargas ══${NC}\n"
-    echo -e "  ${DIM}Archivo: $OTTERRIP_DATA_DIR/history.tsv${NC}\n"
-    local file="$OTTERRIP_DATA_DIR/history.tsv"
-    local total=0
-    if [[ -f "$file" ]]; then
-        total=$(wc -l < "$file" 2>/dev/null || echo 0)
-        total=$(echo "$total" | tr -d ' ')
-    fi
+    echo -e "  ${DIM}Base de datos: $OTTERRIP_STATE_DIR/state.db${NC}\n"
+    local total
+    total=$(py_core state-db history count 2>/dev/null) || total=0
     printf '  %sEntradas totales:%s %s\n\n' "$BOLD" "$NC" "$total"
     echo -e "  ${CYAN}1)${NC} Ver historial (últimas 50 entradas)"
     echo -e "  ${CYAN}2)${NC} Ver historial completo"

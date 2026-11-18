@@ -1,8 +1,8 @@
 @echo off
 setlocal
-title OtterRip v6.1
+title OtterRip v7.9.0
 REM ==============================================================
-REM  OtterRip v6.1 - archivo .bat de un solo fichero
+REM  OtterRip v7.9.0 - archivo .bat de un solo fichero
 REM  Este .bat contiene el programa (PowerShell) incrustado debajo
 REM  de la linea marcadora. Al ejecutarlo se extrae a un .ps1
 REM  temporal y se lanza con -STA (necesario para el selector de
@@ -20,7 +20,7 @@ if not "%RC%"=="0" pause
 exit /b %RC%
 #__OTTERRIP_PS1__
 # ═══════════════════════════════════════════════════════════════
-#  OtterRip v6.1 — Descargador de audio + Letras (LRCLib API) · Windows
+#  OtterRip v7.9.0 — Descargador de audio + Letras (LRCLib API) · Windows
 #  + Descargas paralelas (job pool)
 #  + Selector de carpeta de destino (ventana de Windows)
 #  + Búsqueda e incrustación de letras vía lrclib.net (+ metabuscador)
@@ -424,14 +424,22 @@ if count:
 
 function Repair-Metadata {
     param([string]$Dir, [string]$Fmt, [long]$Since)
-    if (-not $HAS_MUTAGEN -or -not $PY_EXE) { return }
+    if (-not $PY_EXE) { return }
 
+    # Delegar a py_core fix-metadata cuando esté disponible
+    try {
+        $result = & $PY_EXE -m otterrip_core fix-metadata "$Dir" $Fmt 2>&1
+        Write-Host $result
+        return
+    } catch {
+        Write-Host "  Warning: py_core fix-metadata no disponible, usando método local"
+    }
+
+    # Fallback al método local si py_core no está disponible
+    if (-not $HAS_MUTAGEN) { return }
     $pyFile = Join-Path $env:TEMP 'otterrip_fixmeta.py'
     [System.IO.File]::WriteAllText($pyFile, $PY_FIXMETA, (New-Object System.Text.UTF8Encoding($false)))
-
-    # Sin barra final (evita que \" escape la comilla de cierre)
     $dirArg = if ($Dir.Length -gt 3) { $Dir.TrimEnd('\') } else { $Dir + '.' }
-
     $pyArgs = @($PY_ARGS) + @($pyFile, $dirArg, $Fmt, "$Since")
     if ($COVER_LOCAL -and (Test-Path -LiteralPath $COVER_LOCAL)) { $pyArgs += $COVER_LOCAL }
     & $PY_EXE @pyArgs
@@ -869,7 +877,7 @@ function Show-MainMenu {
     while ($true) {
         Clear-Host
         Say "{c}  ╔══════════════════════════════════════════════════╗{/}"
-        Say "{c}  ║                🦦 OTTER RIP v6.1                ║{/}"
+        Say "{c}  ║              🦦 OTTER RIP v7.9.0               ║{/}"
         Say "{c}  ╚══════════════════════════════════════════════════╝{/}"
         $durTxt = ">$($DUR_MIN)s y ≤ $([math]::Floor($DUR_MAX / 60))m $($DUR_MAX % 60)s"
         $parTxt = if ($PARALLEL_JOBS -gt 1) { '(activo)' } else { '(secuencial)' }
@@ -1414,7 +1422,13 @@ function Invoke-DownloadMenu {
             Say ""
             if ($newCount -gt 0) {
                 Say "  {y}⚙{/}  Buscando e incrustando letras ($newCount pista(s) nueva(s))..."
-                Invoke-Lyrics -Dir $dest -Fmt $AFMT -SessionFile $session
+                # Delegar a py_core lyrics cuando esté disponible
+                if ($PY_EXE) {
+                    try { & $PY_EXE -m otterrip_core lyrics "$dest" $AFMT 2>&1 | ForEach-Object { Write-Host $_ } }
+                    catch { Invoke-Lyrics -Dir $dest -Fmt $AFMT -SessionFile $session }
+                } else {
+                    Invoke-Lyrics -Dir $dest -Fmt $AFMT -SessionFile $session
+                }
             } else {
                 Say "  {g}✔ No hay pistas nuevas que requieran letras (ya descargadas).{/}"
             }

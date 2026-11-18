@@ -407,6 +407,10 @@ def build_parser() -> argparse.ArgumentParser:
     yt_sub.add_parser("update", help="Update yt-dlp with backup")
     yt_sub.add_parser("rollback", help="Rollback to backup version")
 
+    # --- dashboard ---
+    p = sub.add_parser("dashboard", help="Interactive TUI dashboard")
+    p.add_argument("--refresh", type=int, default=5, help="Refresh interval in seconds")
+
     return parser
 
 
@@ -437,6 +441,7 @@ COMMAND_MAP = {
     "playlist": playlist_manager.run_playlist,
     "organize": organize.run_organize,
     "subscriptions": subscriptions.run_subscriptions,
+    "dashboard": None,  # handled inline
 }
 
 
@@ -748,6 +753,10 @@ def main() -> int:
             if getattr(args, "disable", False):
                 args.enable = False
         return subscriptions.run_subscriptions(args)
+
+    if args.command == "dashboard":
+        from otterrip_core.dashboard import run_dashboard
+        return run_dashboard(args)
 
     if handler is None:
         print(f"Unknown command: {args.command}", file=sys.stderr)

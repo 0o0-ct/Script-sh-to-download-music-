@@ -51,7 +51,7 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
 LIB_DIR="$SCRIPT_DIR/lib"
 REQUIREMENTS_FILE="$SCRIPT_DIR/requirements.txt"
-BACKEND_SHA256="0b40d14ed92e4a256de5742ce78e869c8375d21422097aa01792ce9cb7b0705e"
+BACKEND_SHA256="158b4b2cd8043253dbfe6973555e78c160a4eeaa90ef64d7a611f0c7e342db26"
 BACKEND_ARCHIVE_URL="https://raw.githubusercontent.com/0o0-ct/Script-sh-to-download-music-/v${OTTERRIP_VERSION}/packages/otterrip-backend-v${OTTERRIP_VERSION}.tar.gz"
 
 # ── Directorios XDG (los valores relativos se ignoran, según la especificación)
@@ -4135,10 +4135,13 @@ menu_lyrics_manager() {
         echo -e "  ${CYAN}2)${NC} Comparar resultados de proveedores para una pista"
         echo -e "  ${CYAN}3)${NC} Ver la letra incrustada de una pista"
         echo -e "  ${CYAN}4)${NC} Ajustar desfase temporal (.lrc o incrustada)"
-        echo -e "  ${CYAN}5)${NC} Convertir LRC → TXT"
-        echo -e "  ${CYAN}6)${NC} Corrección manual: incrustar un .lrc/.txt propio"
-        echo -e "  ${CYAN}7)${NC} Verificar letras de la biblioteca (lyrics verify)"
-        echo -e "  ${CYAN}8)${NC} Reparar letras de la biblioteca (lyrics repair)"
+        echo -e "  ${CYAN}5)${NC} Ajuste interactivo de offset (+/- con preview)"
+        echo -e "  ${CYAN}6)${NC} Elegir entre varios resultados de letras"
+        echo -e "  ${CYAN}7)${NC} Convertir LRC → TXT"
+        echo -e "  ${CYAN}8)${NC} Corrección manual: incrustar un .lrc/.txt propio"
+        echo -e "  ${CYAN}9)${NC} Verificar letras de la biblioteca (lyrics verify)"
+        echo -e "  ${CYAN}10)${NC} Reparar letras de la biblioteca (lyrics repair)"
+        echo -e "  ${CYAN}11)${NC} Ver overrides guardados (offset/proveedor)"
         echo -e "  ${CYAN}0)${NC} Volver"
         echo ""
         local o="" t="" ms="" src=""
@@ -4202,11 +4205,25 @@ menu_lyrics_manager() {
                 pause_enter
                 ;;
             5)
+                # Ajuste interactivo de offset
+                ask_path "Archivo de audio o .lrc" "" || { sleep 1; continue; }
+                t="$ASKED_PATH"
+                py_core lyrics-overrides interactive "$t" || true
+                pause_enter
+                ;;
+            6)
+                # Elegir entre varios resultados
+                ask_path "Archivo de audio" "" || { sleep 1; continue; }
+                t="$ASKED_PATH"
+                py_core lyrics-overrides select "$t" "${LYRICS_ARGS[@]}" || true
+                pause_enter
+                ;;
+            7)
                 ask_path "Archivo .lrc" "" || { sleep 1; continue; }
                 py_core lyrics-tool convert "$ASKED_PATH" || true
                 pause_enter
                 ;;
-            6)
+            8)
                 ask_path "Archivo de audio" "" || { sleep 1; continue; }
                 t="$ASKED_PATH"
                 ask_path "Archivo .lrc/.txt con la letra" "" || { sleep 1; continue; }
@@ -4214,7 +4231,7 @@ menu_lyrics_manager() {
                 py_core lyrics-tool set "$t" "$src" || true
                 pause_enter
                 ;;
-            7)
+            9)
                 ask_path "Carpeta de biblioteca" "$(destination_display)" || { sleep 1; continue; }
                 echo -e "\n  ${YELLOW}⚙${NC} Verificando letras en: $ASKED_PATH\n"
                 local lang_arg=()
@@ -4222,7 +4239,7 @@ menu_lyrics_manager() {
                 py_core lyrics-manage verify "$ASKED_PATH" "${lang_arg[@]}" || true
                 pause_enter
                 ;;
-            8)
+            10)
                 ask_path "Carpeta de biblioteca" "$(destination_display)" || { sleep 1; continue; }
                 local lang_arg=()
                 [[ -n "$LYRICS_LANG" ]] && lang_arg=(--lang "$LYRICS_LANG")
@@ -4235,6 +4252,11 @@ menu_lyrics_manager() {
                 else
                     echo -e "  ${DIM}Sin cambios.${NC}"
                 fi
+                pause_enter
+                ;;
+            11)
+                # Ver overrides guardados
+                py_core lyrics-overrides list || true
                 pause_enter
                 ;;
             0|"") return 0 ;;

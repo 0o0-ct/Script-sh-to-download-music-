@@ -25,6 +25,7 @@ from otterrip_core import library
 from otterrip_core import repair
 from otterrip_core import convert
 from otterrip_core import lyrics_verify
+from otterrip_core import lyrics_overrides
 
 
 def positive_int(value: str) -> int:
@@ -206,6 +207,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_shift.add_argument("ms", type=int)
     p_shift.add_argument("--lang", default="")
 
+    # --- lyrics-overrides (interactive offset / candidate selection) ---
+    p = sub.add_parser("lyrics-overrides", help="Lyrics overrides management")
+    lo_sub = p.add_subparsers(dest="lyrics_overrides_cmd")
+
+    lo_get = lo_sub.add_parser("get", help="Get stored offset for a file")
+    lo_get.add_argument("file")
+
+    lo_set = lo_sub.add_parser("set", help="Set offset override for a file")
+    lo_set.add_argument("file")
+    lo_set.add_argument("--offset", type=int, required=True)
+
+    lo_interactive = lo_sub.add_parser("interactive", help="Interactive offset adjustment")
+    lo_interactive.add_argument("file")
+
+    lo_select = lo_sub.add_parser("select", help="Select from lyric candidates")
+    lo_select.add_argument("file")
+    lo_select.add_argument("--host", default="https://lrclib.net")
+    lo_select.add_argument("--providers", default="lrclib,multiweb")
+    lo_select.add_argument("--lang", default="")
+
+    lo_list = lo_sub.add_parser("list", help="List all stored overrides")
+
     return parser
 
 
@@ -224,6 +247,7 @@ COMMAND_MAP = {
     "repair": repair.run_repair,
     "convert": convert.run_convert,
     "lyrics-manage": lyrics_verify.run_lyrics_manage,
+    "lyrics-overrides": lyrics_overrides.run_lyrics_overrides,
 }
 
 

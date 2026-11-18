@@ -1127,6 +1127,22 @@ async def _process_file(
                     _ALIGN_NOTE_COUNTS.get(align_report.note, 0) + 1
                 )
 
+    # Apply stored offset override (from interactive adjustment)
+    try:
+        from otterrip_core.lyrics_overrides import OverridesStore
+        override_store = OverridesStore()
+        stored_offset = override_store.get_offset(str(fpath))
+        if stored_offset != 0 and best.lines:
+            best.lines = [(max(0, ms + stored_offset), txt) for ms, txt in best.lines]
+            best.lines.sort(key=lambda x: x[0])
+            best.offset_ms += stored_offset
+            if best.lrc:
+                from otterrip_core.lrc_validator import shift_lrc
+                best.lrc = shift_lrc(best.lrc, stored_offset)
+            print(f"    · Offset guardado aplicado: {stored_offset:+d} ms")
+    except Exception:
+        pass  # Overrides are optional
+
     # Apply manual offset if requested (skip if auto-align or force_align
     # already applied an offset)
     if offset_ms != 0 and best.lines and not force_align and not auto_align_applied:

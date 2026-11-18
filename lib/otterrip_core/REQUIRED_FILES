@@ -18,6 +18,7 @@ fix_metadata.py
 library.py
 lyrics.py
 lyrics_bundle.py
+lyrics_overrides.py
 lyrics_tool.py
 lrc_cache.py
 lrc_validator.py

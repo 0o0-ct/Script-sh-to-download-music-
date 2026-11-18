@@ -777,6 +777,7 @@ async def _process_file(
     min_confidence: float = 0.0,
     offset_ms: int = 0,
     auto_align: bool = False,
+    force_align: bool = False,
 ) -> str:
     """Process a single audio file. Returns 'found', 'already', or 'notfound'."""
     audio = _get_audio_file(str(fpath))
@@ -878,12 +879,32 @@ async def _process_file(
                 f"    · Alineación automática: {applied_ms:+d} ms "
                 f"(conf {align_conf:.2f})"
             )
-            best.warnings.append(
-                f"alineación automática {applied_ms:+d} ms (conf {align_conf:.2f})"
-            )
 
-    # Apply offset if requested
-    if offset_ms != 0 and best.lines:
+    # --- Forced line-by-line alignment to audio onsets -----------------
+    if force_align and best.has_sync and best.lines:
+        from otterrip_core.aligner import align_bundle as forced_align_bundle
+
+        align_report = forced_align_bundle(
+            best, str(fpath), offset_ms=offset_ms
+        )
+        if align_report.note:
+            if align_report.lines_moved > 0:
+                print(
+                    f"    · Alineación forzada: {align_report.note}"
+                )
+                best.warnings.append(
+                    f"alineación forzada: {align_report.note}"
+                )
+            else:
+                if align_report.note not in _ALIGN_NOTE_SEEN:
+                    _ALIGN_NOTE_SEEN.add(align_report.note)
+                    print(f"    · {align_report.note}")
+                _ALIGN_NOTE_COUNTS[align_report.note] = (
+                    _ALIGN_NOTE_COUNTS.get(align_report.note, 0) + 1
+                )
+
+    # Apply offset if requested (skip if force_align already applied it)
+    if offset_ms != 0 and best.lines and not force_align:
         from otterrip_core.offset import apply_offset_to_bundle
         best.lines = [(max(0, ms + offset_ms), txt) for ms, txt in best.lines]
         best.lines.sort(key=lambda x: x[0])

@@ -5,6 +5,7 @@ adapters/base.py
 adapters/lrclib.py
 adapters/multiweb.py
 align.py
+aligner.py
 classify_log.py
 clean_names.py
 convert.py

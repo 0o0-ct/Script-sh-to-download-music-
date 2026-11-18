@@ -35,7 +35,7 @@ readonly YTDLP_MIN_VERSION="2024.02.01" # Versión mínima de yt-dlp (YouTube ca
 # de forma silenciosa ni deja procesos huérfanos a medias.
 trap '' PIPE
 
-OTTERRIP_VERSION="7.6.0"
+OTTERRIP_VERSION="7.7.0"
 OTTERRIP_REPO="0o0-ct/Script-sh-to-download-music-"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
@@ -3773,6 +3773,116 @@ download_job() {
     return "$rc"
 }
 
+# @brief Descarga usando el motor Python (yt-dlp API directa).
+# @param $1 URL a descargar.
+# @param $2 Carpeta de destino.
+# @param $3 Archivo de sesión final.
+# @return 0 si el motor Python funciona, 1 para usar fallback bash.
+_run_engine_download() {
+    local url="$1" dest="$2" session_final="$3"
+    local archive="$dest/.otterrip_archive"
+    local lyrics_flag="" proxy_flag="" cookies_browser_flag="" cookies_file_flag=""
+
+    # Verificar que py_core download engine está disponible
+    if ! py_core download engine --help >/dev/null 2>&1; then
+        return 1
+    fi
+
+    # Construir flags opcionales
+    [[ "$FETCH_LYRICS" != "true" ]] && lyrics_flag="--no-lyrics"
+    [[ -n "$OTTERRIP_PROXY" ]] && proxy_flag="--proxy $OTTERRIP_PROXY"
+    [[ -n "$COOKIES_BROWSER" ]] && cookies_browser_flag="--cookies-from-browser $COOKIES_BROWSER"
+    [[ -n "$COOKIES_FILE" ]] && cookies_file_flag="--cookies $COOKIES_FILE"
+
+    # Ejecutar motor Python y capturar JSON output
+    local engine_output
+    engine_output=$(py_core download engine "$url" \
+        --dest "$dest" \
+        --format "$AFMT" \
+        --workers "$PARALLEL_JOBS" \
+        --quality "$AQ" \
+        --dur-min "$DUR_MIN" \
+        --dur-max "$DUR_MAX" \
+        $lyrics_flag \
+        $proxy_flag \
+        $cookies_browser_flag \
+        $cookies_file_flag \
+        2>/dev/null) || true
+
+    # Procesar JSON lines del motor
+    local engine_ok=0 engine_errors=0 engine_skipped=0 engine_cancelled=0
+    local line=""
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        local event_type
+        event_type=$(echo "$line" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('type',''))" 2>/dev/null) || continue
+
+        case "$event_type" in
+            progress)
+                # Progreso individual - mostrar barra
+                local pct title spd eta
+                pct=$(echo "$line" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('percent',0))" 2>/dev/null) || true
+                title=$(echo "$line" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('title',''))" 2>/dev/null) || true
+                spd=$(echo "$line" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('speed',''))" 2>/dev/null) || true
+                eta=$(echo "$line" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('eta',''))" 2>/dev/null) || true
+                if [[ -n "$pct" && "$pct" =~ ^[0-9] ]]; then
+                    printf "\r  [%-50s] %3s%% %s %s" "$(printf '█%.0s' $(seq 1 $((pct/2))))" "$pct" "$spd" "$eta"
+                fi
+                ;;
+            global_progress)
+                # Progreso global de playlist
+                local g_pct g_completed g_total
+                g_pct=$(echo "$line" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('percent',0))" 2>/dev/null) || true
+                g_completed=$(echo "$line" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('completed',0))" 2>/dev/null) || true
+                g_total=$(echo "$line" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('total',0))" 2>/dev/null) || true
+                if [[ -n "$g_pct" && "$g_pct" =~ ^[0-9] ]]; then
+                    printf "\r  Playlist: [%-50s] %3s%% (%s/%s)" "$(printf '█%.0s' $(seq 1 $((g_pct/2))))" "$g_pct" "$g_completed" "$g_total"
+                fi
+                ;;
+            finished)
+                echo ""  # newline after progress bar
+                local f_status
+                f_status=$(echo "$line" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('status',''))" 2>/dev/null) || true
+                if [[ "$f_status" == "ok" ]]; then
+                    (( engine_ok++ ))
+                else
+                    (( engine_errors++ ))
+                fi
+                ;;
+            error)
+                local err_msg
+                err_msg=$(echo "$line" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('error',''))" 2>/dev/null) || true
+                [[ -n "$err_msg" ]] && echo -e "  ${RED}✘${NC} $err_msg"
+                ;;
+            summary)
+                echo ""  # newline
+                engine_ok=$(echo "$line" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('ok',0))" 2>/dev/null) || engine_ok=0
+                engine_errors=$(echo "$line" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('errors',0))" 2>/dev/null) || engine_errors=0
+                engine_skipped=$(echo "$line" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('skipped',0))" 2>/dev/null) || engine_skipped=0
+                engine_cancelled=$(echo "$line" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('cancelled',0))" 2>/dev/null) || engine_cancelled=0
+                ;;
+        esac
+    done <<< "$engine_output"
+
+    # Si el motor no produjo output útil, fallback a bash
+    if [[ "$engine_ok" -eq 0 && "$engine_errors" -eq 0 && "$engine_skipped" -eq 0 ]]; then
+        return 1
+    fi
+
+    # Establecer variables de resultado
+    JOB_OK="$engine_ok"
+    JOB_ERRORS="$engine_errors"
+    JOB_SKIPPED="$engine_skipped"
+    JOB_CANCELLED=$(( engine_cancelled > 0 ))
+
+    # Crear sesión final vacía para compatibilidad con post_process_session
+    if [[ -n "$session_final" ]]; then
+        echo "" > "$session_final"
+    fi
+
+    return 0
+}
+
 # @brief Cuerpo de la descarga: validación, flags, descarga y postproceso.
 # @param $1 URL a descargar.
 # @param $2 Tipo detectado (song|playlist|album).
@@ -3905,25 +4015,37 @@ _download_job_body() {
     local -a all_sessions=() error_logs=() all_logs=()
     local f=""
 
-    # ── Pasada 1 ───────────────────────────────────────────────
-    if [[ "$use_parallel" == "true" ]]; then
-        run_parallel_download "$url" "$outtpl" "$plflag" "$WORK_DIR" "$total" || download_rc=$?
-        download_errors="$PARALLEL_ERRORS"
-        download_skipped="$PARALLEL_SKIPPED"
-        for f in "$WORK_DIR"/session.*; do [[ -f "$f" ]] && all_sessions+=("$f"); done
-        for f in "$WORK_DIR"/worker.*.log; do [[ -f "$f" ]] && error_logs+=("$f"); done
-    else
-        local seq_session="$WORK_DIR/session.1" seq_log="$WORK_DIR/main.log"
-        if [[ -n "$QUEUE_TASK_ID" ]]; then
-            run_sequential_polled "$url" "$outtpl" "$plflag" "$seq_session" "$seq_log" || download_rc=$?
+    # ── Pasada 1: intentar motor Python primero, fallback a bash ──
+    local engine_used="false"
+    if _run_engine_download "$url" "$dest" "$WORK_DIR/session.engine"; then
+        engine_used="true"
+        download_rc=0
+        # JOB_OK, JOB_ERRORS, JOB_SKIPPED ya establecidos por _run_engine_download
+        all_sessions=("$WORK_DIR/session.engine")
+        error_logs=()
+    fi
+
+    if [[ "$engine_used" != "true" ]]; then
+        # Fallback: motor bash original
+        if [[ "$use_parallel" == "true" ]]; then
+            run_parallel_download "$url" "$outtpl" "$plflag" "$WORK_DIR" "$total" || download_rc=$?
+            download_errors="$PARALLEL_ERRORS"
+            download_skipped="$PARALLEL_SKIPPED"
+            for f in "$WORK_DIR"/session.*; do [[ -f "$f" ]] && all_sessions+=("$f"); done
+            for f in "$WORK_DIR"/worker.*.log; do [[ -f "$f" ]] && error_logs+=("$f"); done
         else
-            run_sequential_download "$url" "$outtpl" "$plflag" "$seq_session" "$seq_log" || download_rc=$?
+            local seq_session="$WORK_DIR/session.1" seq_log="$WORK_DIR/main.log"
+            if [[ -n "$QUEUE_TASK_ID" ]]; then
+                run_sequential_polled "$url" "$outtpl" "$plflag" "$seq_session" "$seq_log" || download_rc=$?
+            else
+                run_sequential_download "$url" "$outtpl" "$plflag" "$seq_session" "$seq_log" || download_rc=$?
+            fi
+            all_sessions=("$seq_session")
+            error_logs=("$seq_log")
+            download_errors="$(count_log_pattern '^ERROR:' "$seq_log")"
+            download_skipped="$(count_log_pattern "$SKIP_PATTERN" "$seq_log")"
+            (( download_errors > 0 )) && show_last_errors 5 "$seq_log"
         fi
-        all_sessions=("$seq_session")
-        error_logs=("$seq_log")
-        download_errors="$(count_log_pattern '^ERROR:' "$seq_log")"
-        download_skipped="$(count_log_pattern "$SKIP_PATTERN" "$seq_log")"
-        (( download_errors > 0 )) && show_last_errors 5 "$seq_log"
     fi
     all_logs=("${error_logs[@]}")
 

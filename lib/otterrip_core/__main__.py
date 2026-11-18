@@ -29,6 +29,8 @@ from otterrip_core import lyrics_overrides
 from otterrip_core import state_db
 from otterrip_core import normalize
 from otterrip_core import post_process
+from otterrip_core import download_engine
+from otterrip_core import ytdlp_manager
 
 
 def positive_int(value: str) -> int:
@@ -328,6 +330,31 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--session", default="",
                    help="Session manifest file (JSON lines)")
 
+    # --- download engine ---
+    p = sub.add_parser("download", help="Download engine using yt-dlp API")
+    dl_sub = p.add_subparsers(dest="download_cmd")
+    dl_engine = dl_sub.add_parser("engine", help="Download using Python engine")
+    dl_engine.add_argument("url", help="URL to download")
+    dl_engine.add_argument("--dest", required=True, help="Destination directory")
+    dl_engine.add_argument("--format", default="mp3", help="Audio format profile")
+    dl_engine.add_argument("--workers", type=int, default=3, help="Parallel workers (1-32)")
+    dl_engine.add_argument("--archive", default="", help="Download archive file")
+    dl_engine.add_argument("--quality", default="320K", help="Audio quality/bitrate")
+    dl_engine.add_argument("--dur-min", type=int, default=60, help="Minimum duration in seconds")
+    dl_engine.add_argument("--dur-max", type=int, default=480, help="Maximum duration in seconds")
+    dl_engine.add_argument("--no-lyrics", action="store_true", help="Disable lyrics fetching")
+    dl_engine.add_argument("--proxy", default="", help="Proxy URL")
+    dl_engine.add_argument("--cookies-from-browser", default="", help="Browser for cookies")
+    dl_engine.add_argument("--cookies", default="", help="Cookies file path")
+
+    # --- ytdlp ---
+    p = sub.add_parser("ytdlp", help="yt-dlp version management")
+    yt_sub = p.add_subparsers(dest="ytdlp_cmd")
+    yt_sub.add_parser("version", help="Show installed yt-dlp version")
+    yt_sub.add_parser("update-check", help="Check for yt-dlp updates")
+    yt_sub.add_parser("update", help="Update yt-dlp with backup")
+    yt_sub.add_parser("rollback", help="Rollback to backup version")
+
     return parser
 
 
@@ -353,6 +380,8 @@ COMMAND_MAP = {
     "mb-lookup": None,  # handled inline
     "normalize": normalize.run_normalize,
     "post-process": post_process.run_post_process,
+    "download": None,  # handled inline
+    "ytdlp": None,  # handled inline
 }
 
 
@@ -459,6 +488,97 @@ def _run_state_db(args) -> int:
         return 1
 
 
+def _run_download(args) -> int:
+    """Handle download subcommands."""
+    cmd = getattr(args, "download_cmd", None)
+    if not cmd:
+        print("Usage: download engine <url> --dest <dir>")
+        return 1
+
+    if cmd == "engine":
+        archive = getattr(args, "archive", "") or ""
+        proxy = getattr(args, "proxy", "") or ""
+        cookies_browser = getattr(args, "cookies-from-browser", "") or ""
+        cookies_file = getattr(args, "cookies", "") or ""
+
+        engine = download_engine.DownloadEngine(
+            dest=args.dest,
+            format_profile=getattr(args, "format", "mp3") or "mp3",
+            workers=getattr(args, "workers", 3) or 3,
+            archive_path=archive if archive else None,
+            quality=getattr(args, "quality", "320K") or "320K",
+            dur_min=getattr(args, "dur_min", 60) or 60,
+            dur_max=getattr(args, "dur_max", 480) or 480,
+            fetch_lyrics=not getattr(args, "no_lyrics", False),
+            proxy=proxy if proxy else None,
+            cookies_from_browser=cookies_browser if cookies_browser else None,
+            cookies_file=cookies_file if cookies_file else None,
+        )
+
+        try:
+            summary = engine.download(args.url)
+        except KeyboardInterrupt:
+            print("\nDescarga cancelada por el usuario.", file=sys.stderr)
+            engine.cancel_all()
+            return 130
+
+        if summary.errors > 0 and summary.ok == 0:
+            return 1
+        return 0
+
+    return 1
+
+
+def _run_ytdlp(args) -> int:
+    """Handle ytdlp subcommands."""
+    import json as _json
+
+    cmd = getattr(args, "ytdlp_cmd", None)
+    if not cmd:
+        print("Usage: ytdlp {version|update-check|update|rollback}")
+        return 1
+
+    if cmd == "version":
+        v = ytdlp_manager.get_version()
+        print(f"yt-dlp version: {v or 'not installed'}")
+        return 0
+
+    elif cmd == "update-check":
+        if ytdlp_manager.check_update_interval():
+            available = ytdlp_manager.is_update_available()
+            ytdlp_manager._update_last_check()
+            current = ytdlp_manager.get_version() or "unknown"
+            latest = ytdlp_manager.get_latest_version() or "unknown"
+            print(_json.dumps({
+                "installed": current,
+                "latest": latest,
+                "update_available": available,
+            }, ensure_ascii=False))
+            return 0 if available else 1
+        else:
+            state = ytdlp_manager._load_state()
+            last_check = state.get("last_check", 0)
+            import time as _time
+            days_left = (ytdlp_manager.UPDATE_CHECK_INTERVAL - (_time.time() - last_check)) / (24 * 60 * 60)
+            print(_json.dumps({
+                "update_available": False,
+                "next_check_in_days": round(days_left, 1),
+            }, ensure_ascii=False))
+            return 1
+
+    elif cmd == "update":
+        result = ytdlp_manager.update(backup=True)
+        print(_json.dumps(result, ensure_ascii=False))
+        return 0 if result["success"] else 1
+
+    elif cmd == "rollback":
+        result = ytdlp_manager.rollback()
+        print(_json.dumps(result, ensure_ascii=False))
+        return 0 if result["success"] else 1
+
+    return 1
+
+
 def _run_new_commands(args) -> int:
     """Handle fingerprint, cover-art, and mb-lookup subcommands."""
     import json as _json
@@ -551,6 +671,12 @@ def main() -> int:
     # Inline handlers
     if args.command == "state-db":
         return _run_state_db(args)
+
+    if args.command == "download":
+        return _run_download(args)
+
+    if args.command == "ytdlp":
+        return _run_ytdlp(args)
 
     if args.command in ("fingerprint", "cover-art", "mb-lookup"):
         return _run_new_commands(args)

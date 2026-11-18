@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import unicodedata
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
@@ -43,6 +44,10 @@ from otterrip_core.offset import apply_offset_to_bundle
 from otterrip_core.adapters.base import BaseProvider
 from otterrip_core.adapters.lrclib import LrclibProvider
 from otterrip_core.adapters.multiweb import MultiwebProvider
+from otterrip_core.adapters.syncedlyrics_adapter import (
+    SyncedlyricsProvider,
+    build_syncedlyrics_providers,
+)
 from otterrip_core.musicbrainz import CanonicalMetadata, lookup_canonical
 
 try:
@@ -240,23 +245,78 @@ def _write_lrc_file(audio_path: Path, result: LyricsResult) -> Path | None:
 
 # ─── Provider registry ───────────────────────────────────────────
 
+# Canonical provider order by sync quality (best first):
+# 1. Lrclib — best sync, free, no API key
+# 2. Musixmatch — large catalog, good sync
+# 3. NetEase — good for C-pop / Asian music
+# 4. Megalobiz — fallback sync
+# 5. Genius — plain text only
+# 6. Multiweb (legacy aggregate) — kept for backward compatibility
+PROVIDER_ORDER = [
+    "lrclib",
+    "musixmatch",
+    "netease",
+    "megalobiz",
+    "genius",
+    "multiweb",
+]
+
+
 def _build_providers(
     provider_names: str,
     host: str = "https://lrclib.net",
 ) -> list[BaseProvider]:
+    """Build the provider list from a comma-separated names string.
+
+    Supports individual provider names (lrclib, musixmatch, netease,
+    megalobiz, genius, multiweb) and the special value "all" which
+    enables every available provider in quality order.
+
+    When "multiweb" is specified alongside individual syncedlyrics
+    sources, the individual sources take precedence and multiweb is
+    skipped to avoid duplicate queries.
+    """
     names = [n.strip().lower() for n in provider_names.split(",") if n.strip()]
+
+    # Special: "all" expands to the canonical order
+    if "all" in names:
+        names = list(PROVIDER_ORDER)
+
     providers: list[BaseProvider] = []
-    multiweb_sources = tuple(
-        source for source in MultiwebProvider.DEFAULT_SOURCES
-        if source != "lrclib" or "lrclib" not in names
-    )
-    for name in names:
-        if name == "lrclib":
+    has_lrclib = False
+    has_individual_syncedlyrics = False
+
+    # First pass: collect providers in canonical order
+    for canonical_name in PROVIDER_ORDER:
+        if canonical_name not in names:
+            continue
+
+        if canonical_name == "lrclib":
             providers.append(LrclibProvider(host=host))
-        elif name == "multiweb":
-            p = MultiwebProvider(sources=multiweb_sources)
+            has_lrclib = True
+
+        elif canonical_name == "multiweb":
+            # Skip multiweb if individual syncedlyrics sources are already
+            # in the list — avoids duplicate queries to the same backends.
+            if has_individual_syncedlyrics:
+                continue
+            p = MultiwebProvider()
             if p.is_available():
                 providers.append(p)
+
+        elif canonical_name in ("musixmatch", "netease", "megalobiz", "genius"):
+            p = SyncedlyricsProvider(canonical_name)
+            if p.is_available():
+                providers.append(p)
+                has_individual_syncedlyrics = True
+
+    # If no providers were added at all, fall back to defaults
+    if not providers:
+        # Try lrclib first
+        providers.append(LrclibProvider(host=host))
+        # Then individual syncedlyrics sources
+        providers.extend(build_syncedlyrics_providers())
+
     return providers
 
 
@@ -267,20 +327,35 @@ async def _search_one(
     query: SongQuery,
     timeout: float = 10.0,
 ) -> list[LyricsBundle]:
-    """Search a single provider with timeout.  Returns LyricsBundle list."""
+    """Search a single provider with timeout.  Returns LyricsBundle list.
+
+    Logs per-provider metrics: response time and whether synced lyrics were found.
+    """
+    t0 = time.monotonic()
     try:
         provider_timeout = timeout
         # Multiweb tries several sources sequentially; scale timeout.
         if isinstance(provider, MultiwebProvider):
             provider_timeout *= len(provider.sources)
-        return await asyncio.wait_for(
+        results = await asyncio.wait_for(
             provider.search(query), timeout=provider_timeout
         )
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        has_sync = any(r.has_sync for r in results) if results else False
+        logger.info(
+            "proveedor %s: %d resultado(s), sync=%s, %d ms",
+            provider.name, len(results), has_sync, elapsed_ms,
+        )
+        return results
     except asyncio.TimeoutError:
-        logger.warning("timeout en proveedor %s", provider.name)
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        logger.warning("timeout en proveedor %s (%d ms)", provider.name, elapsed_ms)
         return []
     except Exception as exc:
-        logger.warning("error en proveedor %s: %s", provider.name, exc)
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        logger.warning(
+            "error en proveedor %s (%d ms): %s", provider.name, elapsed_ms, exc
+        )
         return []
 
 

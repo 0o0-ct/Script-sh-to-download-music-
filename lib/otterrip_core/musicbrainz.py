@@ -47,21 +47,40 @@ class CanonicalMetadata:
 
 
 def _join_artists(recording: dict) -> str:
-    """Join artist credits from a MusicBrainz recording node."""
+    """Join artist credits from a MusicBrainz recording node.
+
+    Handles both dict-based artist-credit entries and plain strings.
+    """
     artists = recording.get("artist-credit", [])
+    if not artists:
+        return ""
     parts: list[str] = []
     for cred in artists:
-        name = cred.get("name", "") if isinstance(cred, dict) else cred
-        if name:
-            parts.append(name)
+        if isinstance(cred, dict):
+            name = cred.get("name", "")
+            if name:
+                parts.append(str(name))
+        elif isinstance(cred, str):
+            if cred:
+                parts.append(cred)
     return ", ".join(parts) if parts else ""
 
 
 def _extract_isrc(recording: dict) -> str:
-    """Extract the first ISRC from a recording's isrc-list."""
+    """Extract the first ISRC from a recording's isrc-list.
+
+    MusicBrainz may return ``isrcs`` as either a list of dicts
+    ``[{"isrc": "..."}]`` (when queried by MBID with inc=isrcs) or a
+    list of plain strings ``["USXX12345678"]`` (search results).
+    """
     isrcs = recording.get("isrcs", [])
-    if isrcs:
-        return isrcs[0].get("isrc", "").strip()
+    if not isrcs:
+        return ""
+    first = isrcs[0]
+    if isinstance(first, dict):
+        return str(first.get("isrc", "")).strip()
+    elif isinstance(first, str):
+        return first.strip()
     return ""
 
 
@@ -112,6 +131,7 @@ async def lookup_canonical(
         "query": query,
         "fmt": "json",
         "limit": "1",
+        "inc": "artist-credits+isrcs",
     }
 
     headers = {"User-Agent": MB_USERAGENT}
@@ -141,6 +161,15 @@ async def lookup_canonical(
             return None
 
         rec = recordings[0]
+        # MusicBrainz may return a plain MBID string instead of a dict
+        # when inc= is not honored or the recording has no data.
+        if not isinstance(rec, dict):
+            logger.debug(
+                "MusicBrainz returned non-dict recording for '%s': %s",
+                query, type(rec).__name__,
+            )
+            return None
+
         canonical_title = rec.get("title", "").strip()
         canonical_artist = _join_artists(rec)
         duration = _extract_duration(rec)

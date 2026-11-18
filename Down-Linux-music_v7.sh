@@ -51,7 +51,7 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
 LIB_DIR="$SCRIPT_DIR/lib"
 REQUIREMENTS_FILE="$SCRIPT_DIR/requirements.txt"
-BACKEND_SHA256="158b4b2cd8043253dbfe6973555e78c160a4eeaa90ef64d7a611f0c7e342db26"
+BACKEND_SHA256="300a455c07ab036cc5b4740452edab290132591cca8b8ab111ba8ebcf176f8d8"
 BACKEND_ARCHIVE_URL="https://raw.githubusercontent.com/0o0-ct/Script-sh-to-download-music-/v${OTTERRIP_VERSION}/packages/otterrip-backend-v${OTTERRIP_VERSION}.tar.gz"
 
 # ── Directorios XDG (los valores relativos se ignoran, según la especificación)
@@ -2467,7 +2467,7 @@ menu() {
             14) menu_convert ;;
             15) menu_diagnostics ;;
             16) menu_cookies ;;
-            17) show_history 50; pause_enter ;;
+            17) menu_history ;;
             18) menu_proxy ;;
             19) menu_reset_defaults ;;
             0) save_config; echo -e "\n  ${GREEN}¡Hasta luego!${NC}\n"; exit 0 ;;
@@ -3538,6 +3538,185 @@ show_history() {
     return 0
 }
 
+# Limpia el historial de descargas.
+# @brief Limpia el historial de descargas.
+# @param $1 Modo: "all" (todo), "failed" (solo fallidas), "partial" (solo parciales).
+# @return 0 siempre.
+# @side-effects Modifica o borra $OTTERRIP_DATA_DIR/history.tsv.
+clear_history() {
+    local mode="${1:-all}"
+    local file="$OTTERRIP_DATA_DIR/history.tsv"
+    if [[ ! -f "$file" ]]; then
+        msg_info "El historial ya está vacío."
+        return 0
+    fi
+    local total
+    total=$(wc -l < "$file" 2>/dev/null || echo 0)
+    total=$(echo "$total" | tr -d ' ')
+    (( total == 0 )) && { msg_info "El historial ya está vacío."; return 0; }
+
+    case "$mode" in
+        all)
+            local confirm=""
+            echo -e "\n  ${YELLOW}⚠ Esto borrará las $total entradas del historial.${NC}"
+            read -rp "  ¿Estás seguro? (s/N): " confirm || return 0
+            confirm=$(echo "$confirm" | tr '[:upper:]' '[:lower:]')
+            if [[ "$confirm" != "s" && "$confirm" != "y" && "$confirm" != "yes" ]]; then
+                msg_info "Operación cancelada."
+                return 0
+            fi
+            : > "$file"
+            msg_ok "Historial limpiado: $total entradas eliminadas."
+            ;;
+        failed)
+            local tmp
+            tmp=$(mktemp) || return 1
+            local kept=0 removed=0
+            while IFS=$'\t' read -r ts url title dest status dur; do
+                [[ -z "${ts:-}" ]] && continue
+                if [[ "$status" == "failed" ]]; then
+                    removed=$((removed + 1))
+                else
+                    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$ts" "$url" "$title" "$dest" "$status" "$dur" >> "$tmp"
+                    kept=$((kept + 1))
+                fi
+            done < "$file"
+            mv -- "$tmp" "$file"
+            if (( removed > 0 )); then
+                msg_ok "Entradas fallidas eliminadas: $removed (conservadas: $kept)."
+            else
+                msg_info "No había entradas fallidas en el historial."
+            fi
+            ;;
+        partial)
+            local tmp
+            tmp=$(mktemp) || return 1
+            local kept=0 removed=0
+            while IFS=$'\t' read -r ts url title dest status dur; do
+                [[ -z "${ts:-}" ]] && continue
+                if [[ "$status" == "partial" ]]; then
+                    removed=$((removed + 1))
+                else
+                    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$ts" "$url" "$title" "$dest" "$status" "$dur" >> "$tmp"
+                    kept=$((kept + 1))
+                fi
+            done < "$file"
+            mv -- "$tmp" "$file"
+            if (( removed > 0 )); then
+                msg_ok "Entradas parciales eliminadas: $removed (conservadas: $kept)."
+            else
+                msg_info "No había entradas parciales en el historial."
+            fi
+            ;;
+        *)
+            msg_err "Modo desconocido: $mode"
+            return 1
+            ;;
+    esac
+    sleep 1
+    return 0
+}
+
+# Limpia los archivos .otterrip_archive de las carpetas de destino.
+# Esto permite que yt-dlp vuelva a descargar las canciones ya descargadas.
+# @brief Limpia los archives de yt-dlp para forzar re-descargas.
+# @return 0 siempre.
+# @side-effects Borra archivos .otterrip_archive en carpetas de destino.
+clear_download_archives() {
+    local file="$OTTERRIP_DATA_DIR/history.tsv"
+    if [[ ! -f "$file" ]]; then
+        msg_info "No hay historial de descargas."
+        return 0
+    fi
+
+    # Extraer destinos únicos del historial
+    local -A dests
+    local count=0
+    while IFS=$'\t' read -r ts url title dest status dur; do
+        [[ -z "${dest:-}" ]] && continue
+        dests["$dest"]=1
+        count=$((count + 1))
+    done < "$file"
+
+    local unique=${#dests[@]}
+    if (( unique == 0 )); then
+        msg_info "No se encontraron carpetas de destino en el historial."
+        return 0
+    fi
+
+    echo -e "\n  ${CYAN}Carpetas de destino encontradas: $unique${NC}"
+    local archive_count=0
+    for dest in "${!dests[@]}"; do
+        local archive="$dest/.otterrip_archive"
+        if [[ -f "$archive" ]]; then
+            archive_count=$((archive_count + 1))
+        fi
+    done
+
+    if (( archive_count == 0 )); then
+        msg_info "No hay archivos .otterrip_archive que limpiar."
+        return 0
+    fi
+
+    local confirm=""
+    echo -e "\n  ${YELLOW}⚠ Se borrarán $archive_count archivo(s) .otterrip_archive.${NC}"
+    echo -e "  ${DIM}Esto permitirá re-descargar las canciones de esas carpetas.${NC}"
+    read -rp "  ¿Estás seguro? (s/N): " confirm || return 0
+    confirm=$(echo "$confirm" | tr '[:upper:]' '[:lower:]')
+    if [[ "$confirm" != "s" && "$confirm" != "y" && "$confirm" != "yes" ]]; then
+        msg_info "Operación cancelada."
+        return 0
+    fi
+
+    local deleted=0
+    for dest in "${!dests[@]}"; do
+        local archive="$dest/.otterrip_archive"
+        if [[ -f "$archive" ]]; then
+            rm -f -- "$archive" && deleted=$((deleted + 1))
+        fi
+    done
+    msg_ok "Archives eliminados: $deleted de $archive_count."
+    sleep 1
+    return 0
+}
+
+# Submenú de gestión del historial de descargas.
+# @brief Muestra el submenú de gestión del historial.
+# @return 0 siempre.
+# @side-effects Puede modificar history.tsv o archivos .otterrip_archive.
+menu_history() {
+    clear_screen
+    echo -e "${BOLD}${CYAN}══ Historial de descargas ══${NC}\n"
+    echo -e "  ${DIM}Archivo: $OTTERRIP_DATA_DIR/history.tsv${NC}\n"
+    local file="$OTTERRIP_DATA_DIR/history.tsv"
+    local total=0
+    if [[ -f "$file" ]]; then
+        total=$(wc -l < "$file" 2>/dev/null || echo 0)
+        total=$(echo "$total" | tr -d ' ')
+    fi
+    printf '  %sEntradas totales:%s %s\n\n' "$BOLD" "$NC" "$total"
+    echo -e "  ${CYAN}1)${NC} Ver historial (últimas 50 entradas)"
+    echo -e "  ${CYAN}2)${NC} Ver historial completo"
+    echo -e "  ${CYAN}3)${NC} Limpiar historial completo"
+    echo -e "  ${CYAN}4)${NC} Limpiar solo entradas fallidas"
+    echo -e "  ${CYAN}5)${NC} Limpiar solo entradas parciales"
+    echo -e "  ${CYAN}6)${NC} Limpiar archives de yt-dlp (forzar re-descarga)"
+    echo -e "  ${CYAN}0)${NC} Volver"
+    echo ""
+    read -rp "  Opción: " hopt || return 0
+    case "$hopt" in
+        1) show_history 50; pause_enter ;;
+        2) show_history 99999; pause_enter ;;
+        3) clear_history "all" ;;
+        4) clear_history "failed" ;;
+        5) clear_history "partial" ;;
+        6) clear_download_archives ;;
+        0) return 0 ;;
+        "") return 0 ;;
+        *) echo -e "  ${RED}Opción inválida.${NC}"; sleep 1 ;;
+    esac
+}
+
 # Envía una notificación de escritorio al terminar (si hay servidor de avisos).
 # @brief Envía una notificación de escritorio al terminar una descarga.
 # @param $1 Título de la notificación.
@@ -4495,6 +4674,7 @@ Uso: $(basename "$0") [opción | URL [carpeta_destino]]
   --verbose               muestra los comandos completos de yt-dlp
   --debug                 traza de depuración (set -x) y no borra temporales
   --history               muestra el historial de descargas
+  --clear-history [modo]  limpia el historial (modo: all|failed|partial|archives)
   --doctor               diagnóstico del sistema (puede descargar el backend)
   --queue-run            procesa la cola de descargas sin menús
   --check-deps           fuerza verificación completa de dependencias (ignora caché)
@@ -4559,7 +4739,7 @@ main() {
         --queue-run) ;;
         --check-deps) ;;
         --add|--enqueue) ;;
-        --history) ;;
+        --history|--clear-history) ;;
         --batch|--proxy) ;;
         -q|--quality|-j|--jobs|--no-lyrics|--cookies-from-browser|--cookies) ;;
         *)
@@ -4581,6 +4761,16 @@ main() {
     if [[ "${1-}" == "--history" ]]; then
         show_history 50
         return 0
+    fi
+
+    # --clear-history: limpia el historial (modo opcional: all|failed|partial|archives).
+    if [[ "${1-}" == "--clear-history" ]]; then
+        local mode="${2:-all}"
+        case "$mode" in
+            all|failed|partial) clear_history "$mode"; return $? ;;
+            archives) clear_download_archives; return $? ;;
+            *) msg_err "Modo inválido para --clear-history: $mode (usa all|failed|partial|archives)"; return 2 ;;
+        esac
     fi
 
     # --check-deps ahora tiene los directorios creados para write_deps_cache.

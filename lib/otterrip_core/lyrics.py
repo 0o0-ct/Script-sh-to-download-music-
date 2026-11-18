@@ -999,7 +999,9 @@ async def _process_file(
         return "notfound"
 
     # --- Clean query terms (Phase 1: limpieza de consulta) ------------
-    terms = build_query_terms(title, artist, album)
+    # Pass filename so that suspicious metadata (e.g. playlist names as
+    # artist) can fall back to parsing the filename for real metadata.
+    terms = build_query_terms(title, artist, album, filename=fpath.name)
     clean_t = terms["title"]
     clean_a = terms["artist"]
     clean_alb = terms["album"]

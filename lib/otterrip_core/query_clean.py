@@ -254,11 +254,88 @@ def split_feat(title: str) -> tuple[str, str | None]:
     return title, None
 
 
+# Patterns that indicate the artist field is actually a playlist/channel
+# name rather than a real artist.  When detected, we fall back to parsing
+# the filename for the actual artist and title.
+_SUSPICIOUS_ARTIST_PATTERNS = [
+    r"\bhits\b",
+    r"\bplaylist\b",
+    r"\bcompilation\b",
+    r"\bvarious\s+artists\b",
+    r"\bbest\s+of\b",
+    r"\btop\s+\d+",
+    r"\b60['’]?s\s+70['’]?s\b",
+    r"\b70['’]?s\s+80['’]?s\b",
+    r"\b80['’]?s\s+90['’]?s\b",
+    r"\b90['’]?s\b",
+    r"\b\d+['’]?s\b.*\b\d+['’]?s\b",  # e.g. "70s 80s"
+    r"\bchannel\b",
+    r"\btopic\b",
+    r"\bvevo\b",
+    r"\bmusic\s+official\b",
+    r"\bofficial\s+music\b",
+]
+_SUSPICIOUS_ARTIST_RE = re.compile("|".join(_SUSPICIOUS_ARTIST_PATTERNS), re.IGNORECASE)
+
+
+def is_suspicious_artist(artist: str) -> bool:
+    """Return True if the artist string looks like a playlist/channel name.
+
+    Examples of suspicious artists:
+        "60's 70's 80's 90's Hits"
+        "Various Artists"
+        "70s 80s"
+        "Phillip Boa and the Voodooclub - 60's 70's 80's 90's 10"
+    """
+    if not artist:
+        return False
+    return bool(_SUSPICIOUS_ARTIST_RE.search(artist))
+
+
+def parse_filename_for_metadata(
+    filename: str,
+) -> tuple[str, str]:
+    """Extract title and artist from a typical yt-dlp filename.
+
+    Handles common patterns:
+        "001 - Artist - Title.ext"       → ("Title", "Artist")
+        "Artist - Title.ext"             → ("Title", "Artist")
+        "001 - Title.ext"                → ("Title", "")
+        "Title.ext"                      → ("Title", "")
+
+    Returns ``(title, artist)``.
+    """
+    # Strip extension
+    stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+    # Normalise dashes
+    norm = stem.replace("–", "-").replace("—", "-")
+    parts = [p.strip() for p in norm.split(" - ")]
+
+    if len(parts) >= 3:
+        # "001 - Artist - Title" — first part is a track number
+        first = parts[0]
+        if first.isdigit() or (len(first) <= 3 and first.replace(" ", "").isdigit()):
+            return clean_title(parts[2]), clean_artist(parts[1])
+        # "Artist1, Artist2 - Title" or similar — all parts are meaningful
+        return clean_title(parts[-1]), clean_artist(" - ".join(parts[:-1]))
+    elif len(parts) == 2:
+        first = parts[0]
+        if first.isdigit() or (len(first) <= 3 and first.replace(" ", "").isdigit()):
+            # "001 - Title"
+            return clean_title(parts[1]), ""
+        # "Artist - Title"
+        return clean_title(parts[1]), clean_artist(parts[0])
+    else:
+        # Just a title
+        return clean_title(stem), ""
+
+
 def build_query_terms(
     title: str,
     artist: str,
     album: str = "",
     feat_artist: str | None = None,
+    filename: str = "",
 ) -> dict[str, str]:
     """Build cleaned query terms for provider lookups.
 
@@ -268,7 +345,24 @@ def build_query_terms(
     When the title contains a repeated artist prefix (e.g. "JON CARLO - Jon Carlo -
     Quema Mi Vida") and the artist field is empty, the artist name is extracted
     from the title automatically.
+
+    When the artist field looks like a playlist/channel name (e.g. "60's 70's
+    80's 90's Hits") and a ``filename`` is provided, the function falls back
+    to parsing the filename for the actual artist and title.
     """
+    # ── Fallback: parse filename when artist is suspicious ──
+    if is_suspicious_artist(artist) and filename:
+        fn_title, fn_artist = parse_filename_for_metadata(filename)
+        if fn_artist:
+            # Use filename-derived metadata — it's more reliable than the tags
+            title = fn_title or title
+            artist = fn_artist
+            logger = __import__("logging", fromlist=["getLogger"]).getLogger(__name__)
+            logger.info(
+                "metadatos sospechosos '%s' → fallback filename: artist='%s', title='%s'",
+                artist, fn_artist, fn_title,
+            )
+
     # Strip repeated artist prefix and extract artist if available
     stripped_title, extracted_artist = _strip_repeated_artist_prefix(title)
     clean_t = clean_title(stripped_title)

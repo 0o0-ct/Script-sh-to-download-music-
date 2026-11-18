@@ -121,6 +121,16 @@ class TestJoinArtists:
         rec = {}
         assert _join_artists(rec) == ""
 
+    def test_artist_credit_as_strings(self):
+        """MusicBrainz may return artist-credit as plain strings in some responses."""
+        rec = {"artist-credit": ["The Weeknd"]}
+        assert _join_artists(rec) == "The Weeknd"
+
+    def test_artist_credit_mixed(self):
+        """Mixed dict and string entries."""
+        rec = {"artist-credit": [{"name": "Artist A"}, "Artist B"]}
+        assert _join_artists(rec) == "Artist A, Artist B"
+
 
 class TestExtractISRC:
     def test_with_isrc(self):
@@ -134,6 +144,15 @@ class TestExtractISRC:
     def test_missing_key(self):
         rec = {}
         assert _extract_isrc(rec) == ""
+
+    def test_isrcs_as_string_list(self):
+        """MusicBrainz search results may return isrcs as plain strings."""
+        rec = {"isrcs": ["USUG11901213"]}
+        assert _extract_isrc(rec) == "USUG11901213"
+
+    def test_isrcs_as_string_list_with_whitespace(self):
+        rec = {"isrcs": ["  USUG11901213  "]}
+        assert _extract_isrc(rec) == "USUG11901213"
 
 
 class TestExtractDuration:

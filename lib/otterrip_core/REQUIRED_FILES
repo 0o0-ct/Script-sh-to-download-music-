@@ -20,6 +20,7 @@ lrc_cache.py
 lrc_validator.py
 merge_sessions.py
 models.py
+musicbrainz.py
 lyrics_verify.py
 offset.py
 query_clean.py

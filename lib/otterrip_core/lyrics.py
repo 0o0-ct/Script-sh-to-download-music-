@@ -43,6 +43,13 @@ from otterrip_core.offset import apply_offset_to_bundle
 from otterrip_core.adapters.base import BaseProvider
 from otterrip_core.adapters.lrclib import LrclibProvider
 from otterrip_core.adapters.multiweb import MultiwebProvider
+from otterrip_core.musicbrainz import CanonicalMetadata, lookup_canonical
+
+try:
+    from rapidfuzz import fuzz as _fuzz
+    HAS_RAPIDFUZZ = True
+except ImportError:
+    HAS_RAPIDFUZZ = False
 
 
 logger = logging.getLogger("otterrip_core.lyrics")
@@ -285,6 +292,7 @@ async def _search_cascade(
     stats: dict[str, dict] | None = None,
     timeout: float = 10.0,
     cache: Optional[LyricsCache] = None,
+    canonical: Optional[CanonicalMetadata] = None,
 ) -> Optional[LyricsBundle]:
     """Try providers in order until one returns a usable LyricsBundle.
 
@@ -295,10 +303,13 @@ async def _search_cascade(
     prefer_synced is True, the remaining providers are still consulted
     in case they have synced lyrics. The best result across all providers
     is returned.
+
+    When *canonical* metadata is provided (from MusicBrainz), bundles are
+    scored with fuzzy matching for better accuracy.
     """
     # --- Cache lookup --------------------------------------------------
     if cache is not None:
-        cached = cache.get(query.artist, query.title, None)
+        cached = cache.get(query.artist, query.title, None, query.isrc)
         if cached is not None:
             # Re-hydrate bundle from cached dict.
             bundle = LyricsBundle(
@@ -367,6 +378,7 @@ async def _search_cascade(
                 plain_ok=plain_ok,
                 query=query,
                 query_duration_s=query.duration,
+                canonical=canonical,
             )
         elif are_bundles:
             current_best = _select_best_bundle(
@@ -375,6 +387,7 @@ async def _search_cascade(
                 plain_ok=plain_ok,
                 query=query,
                 query_duration_s=query.duration,
+                canonical=canonical,
             )
 
         if current_best is not None:
@@ -441,6 +454,7 @@ async def _search_cascade(
                 query.title,
                 cache_payload,
                 duration_ms=cache_payload["audio_duration_ms"],
+                isrc=query.isrc,
             )
         logger.info(
             "letra encontrada: %s - %s | kind=%s | conf=%.2f | source=%s",
@@ -477,16 +491,97 @@ def _bundle_matches_query(bundle: LyricsBundle, query: SongQuery) -> bool:
     return True
 
 
+def _score_bundle(
+    bundle: LyricsBundle,
+    canonical_title: str,
+    canonical_artist: str,
+    canonical_duration: Optional[float] = None,
+) -> float:
+    """Score a LyricsBundle against canonical metadata.
+
+    Returns a value in [0.0, 1.0] where 1.0 is the best match.
+
+    Scoring weights:
+        - Title similarity: 40%
+        - Artist similarity: 30%
+        - Duration match: 20%
+        - Sync level: 10%
+    """
+    if not canonical_title and not canonical_artist:
+        return bundle.confidence
+
+    # Title similarity (40%)
+    if HAS_RAPIDFUZZ and canonical_title and bundle.title:
+        title_score = _fuzz.ratio(
+            _normalize_match_text(canonical_title),
+            _normalize_match_text(bundle.title),
+        ) / 100.0
+    elif canonical_title and bundle.title:
+        # Fallback: exact normalized match
+        title_score = (
+            1.0
+            if _normalize_match_text(canonical_title) == _normalize_match_text(bundle.title)
+            else 0.0
+        )
+    else:
+        title_score = 0.5
+
+    # Artist similarity (30%)
+    if HAS_RAPIDFUZZ and canonical_artist and bundle.artist:
+        artist_score = _fuzz.ratio(
+            _normalize_match_text(canonical_artist),
+            _normalize_match_text(bundle.artist),
+        ) / 100.0
+    elif canonical_artist and bundle.artist:
+        artist_score = (
+            1.0
+            if _normalize_match_text(canonical_artist) == _normalize_match_text(bundle.artist)
+            else 0.0
+        )
+    else:
+        artist_score = 0.5
+
+    # Duration match (20%)
+    if canonical_duration is not None and bundle.ref_duration_ms is not None:
+        ref_dur_s = bundle.ref_duration_ms / 1000.0
+        dur_diff = abs(canonical_duration - ref_dur_s)
+        # Score drops linearly: 0s diff = 1.0, 30s+ diff = 0.0
+        duration_score = max(0.0, 1.0 - (dur_diff / 30.0))
+    elif canonical_duration is not None and bundle.audio_duration_ms is not None:
+        audio_dur_s = bundle.audio_duration_ms / 1000.0
+        dur_diff = abs(canonical_duration - audio_dur_s)
+        duration_score = max(0.0, 1.0 - (dur_diff / 30.0))
+    else:
+        duration_score = 0.5
+
+    # Sync level (10%)
+    sync_map = {"word": 1.0, "line": 0.7, "plain": 0.3, "instrumental": 0.0, "none": 0.0}
+    sync_score = sync_map.get(bundle.kind, 0.0)
+
+    combined = (
+        title_score * 0.40
+        + artist_score * 0.30
+        + duration_score * 0.20
+        + sync_score * 0.10
+    )
+    return round(combined, 4)
+
+
 def _select_best_bundle(
     bundles: list[LyricsBundle],
     prefer_synced: bool = True,
     plain_ok: bool = False,
     query: Optional[SongQuery] = None,
     query_duration_s: Optional[float] = None,
+    canonical: Optional[CanonicalMetadata] = None,
 ) -> Optional[LyricsBundle]:
     """Select the best LyricsBundle from a provider's results.
 
     Rule: any synced (line/word) beats any plain.  Never degrade.
+
+    When *canonical* metadata is provided (from MusicBrainz), bundles are
+    scored with fuzzy matching so that covers, live versions and mismatched
+    recordings are ranked lower.
     """
     if not bundles:
         return None
@@ -500,6 +595,38 @@ def _select_best_bundle(
     ]
     if not candidates:
         return None
+
+    # Use fuzzy scoring when canonical metadata is available
+    if canonical and (canonical.title or canonical.artist):
+        scored: list[tuple[float, LyricsBundle]] = []
+        for b in candidates:
+            s = _score_bundle(
+                b,
+                canonical.title,
+                canonical.artist,
+                canonical.duration,
+            )
+            scored.append((s, b))
+
+        # Sort by score descending, then by sync preference
+        def sort_key(item: tuple[float, LyricsBundle]) -> tuple:
+            s, b = item
+            sync_boost = 0.15 if (b.has_sync and prefer_synced) else 0.0
+            return (s + sync_boost, s, b.confidence)
+
+        scored.sort(key=sort_key, reverse=True)
+        best_score, best_bundle = scored[0]
+
+        logger.info(
+            "scoring winner: %s - %s | score=%.3f | kind=%s | source=%s | dur_delta=%s",
+            best_bundle.artist,
+            best_bundle.title,
+            best_score,
+            best_bundle.kind,
+            best_bundle.source,
+            best_bundle.duration_delta_ms(),
+        )
+        return best_bundle
 
     def sort_key(b: LyricsBundle) -> tuple:
         sync_score = 1 if (b.has_sync and prefer_synced) else 0
@@ -679,6 +806,27 @@ async def _process_file(
     clean_a = terms["artist"]
     clean_alb = terms["album"]
 
+    # --- Phase 1b: MusicBrainz canonical metadata lookup --------------
+    canonical: Optional[CanonicalMetadata] = None
+    try:
+        canonical = await lookup_canonical(
+            clean_t, clean_a, clean_alb, timeout=5.0
+        )
+        if canonical:
+            # Use canonical metadata to refine the query
+            if canonical.title:
+                clean_t = canonical.title
+            if canonical.artist:
+                clean_a = canonical.artist
+            if canonical.album:
+                clean_alb = canonical.album
+            if canonical.duration and not duration:
+                duration = canonical.duration
+            if canonical.isrc and not isrc:
+                isrc = canonical.isrc
+    except Exception as exc:
+        logger.debug("MusicBrainz lookup failed: %s", exc)
+
     query = SongQuery(
         title=clean_t,
         artist=clean_a,
@@ -697,6 +845,7 @@ async def _process_file(
         stats=stats,
         timeout=10.0,
         cache=cache,
+        canonical=canonical,
     )
     if best is None:
         print(f"  ✘ {fpath.name} — no se encontraron letras")
@@ -773,12 +922,29 @@ async def _process_file(
             if should_write_sidecar:
                 lrc_path = fpath.with_suffix(".lrc")
                 try:
+                    # Build headers for sidecar compatibility (Poweramp, foobar2000, VLC)
+                    header_lines: list[str] = []
+                    if best.title or clean_t:
+                        header_lines.append(f"[ti:{clean_t or best.title}]")
+                    if best.artist or clean_a:
+                        header_lines.append(f"[ar:{clean_a or best.artist}]")
+                    if best.album or clean_alb:
+                        header_lines.append(f"[al:{clean_alb or best.album}]")
+                    if duration:
+                        mm = int(duration) // 60
+                        ss = int(duration) % 60
+                        header_lines.append(f"[length:{mm:02d}:{ss:02d}]")
+                    header_lines.append("[ve:OtterRip]")
+                    header_text = "\n".join(header_lines) + "\n" if header_lines else ""
+
                     if best.has_sync and best.lines:
                         lrc_entries = [(ms / 1000.0, txt) for ms, txt in best.lines]
-                        lrc_content = _format_lrc(lrc_entries)
+                        lrc_content = header_text + _format_lrc(lrc_entries)
                     else:
                         # Plain lyrics sidecar (no timestamps)
                         lrc_content = best.plain or "\n".join(t for _, t in best.lines) if best.lines else ""
+                        if lrc_content and header_text:
+                            lrc_content = header_text + lrc_content
                     if lrc_content:
                         lrc_path.write_text(lrc_content, encoding="utf-8")
                     # Enhanced LRC sidecar for word-level

@@ -154,9 +154,28 @@ def validate_and_normalise_lrc(
 
     filtered.sort(key=lambda x: x[0])
 
+    # Strict validation: detect duplicate timestamps
+    seen_timestamps: set[int] = set()
+    deduped: list[tuple[int, str]] = []
+    for ms, txt in filtered:
+        if ms in seen_timestamps:
+            warnings.append(f"timestamp duplicado eliminado: {ms}ms")
+            continue
+        seen_timestamps.add(ms)
+        deduped.append((ms, txt))
+
+    # Strict validation: detect excessive empty lines
+    total_lines = len(deduped)
+    empty_lines = sum(1 for _, txt in deduped if not txt.strip())
+    if total_lines > 0 and (empty_lines / total_lines) > 0.30:
+        warnings.append(
+            f"exceso de líneas vacías: {empty_lines}/{total_lines} "
+            f"({empty_lines/total_lines:.0%})"
+        )
+
     monotonic: list[tuple[int, str]] = []
     last_ms = -1
-    for ms, txt in filtered:
+    for ms, txt in deduped:
         if ms < last_ms:
             warnings.append(
                 f"timestamp no monotónico corregido: {ms}ms < {last_ms}ms"

@@ -35,7 +35,7 @@ readonly YTDLP_MIN_VERSION="2024.02.01" # Versión mínima de yt-dlp (YouTube ca
 # de forma silenciosa ni deja procesos huérfanos a medias.
 trap '' PIPE
 
-OTTERRIP_VERSION="7.7.0"
+OTTERRIP_VERSION="7.8.0"
 OTTERRIP_REPO="0o0-ct/Script-sh-to-download-music-"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
@@ -2387,6 +2387,206 @@ menu_reset_defaults() {
     sleep 2
 }
 
+# -------------------------------------------------------------------
+# Playlist manager menu (export M3U, sync, list)
+# -------------------------------------------------------------------
+menu_playlist() {
+    while true; do
+        clear_screen
+        echo -e "${BOLD}${CYAN}══ Gestor de playlists ══${NC}\n"
+        echo -e "  Exporta playlists a M3U, sincroniza con carpetas locales"
+        echo -e "  y detecta canciones nuevas o eliminadas.\n"
+        echo -e "  ${CYAN} 1)${NC} Exportar playlist a M3U"
+        echo -e "  ${CYAN} 2)${NC} Sincronizar playlist con carpeta"
+        echo -e "  ${CYAN} 3)${NC} Listar archivos de audio en carpeta"
+        echo -e "  ${CYAN} 0)${NC} Volver"
+        echo ""
+        read -rp "  Opción: " op || return 0
+        case "$op" in
+            1)
+                clear_screen
+                echo -e "${BOLD}${CYAN}══ Exportar playlist a M3U ══${NC}\n"
+                read -rp "  URL de la playlist: " pl_url || return 0
+                pl_url="$(trim_input "$pl_url")"
+                [[ -z "$pl_url" ]] && { echo -e "  ${RED}URL vacía.${NC}"; sleep 1; continue; }
+                read -rp "  Carpeta de destino: " pl_dest || return 0
+                pl_dest="$(trim_input "$(strip_wrapping_quotes "$pl_dest")")"
+                [[ -z "$pl_dest" ]] && pl_dest="$DOWNLOADS"
+                mkdir -p "$pl_dest"
+                msg_info "Exportando playlist..."
+                py_core playlist export "$pl_url" --dest "$pl_dest"
+                sleep 2
+                ;;
+            2)
+                clear_screen
+                echo -e "${BOLD}${CYAN}══ Sincronizar playlist ══${NC}\n"
+                read -rp "  URL de la playlist: " pl_url || return 0
+                pl_url="$(trim_input "$pl_url")"
+                [[ -z "$pl_url" ]] && { echo -e "  ${RED}URL vacía.${NC}"; sleep 1; continue; }
+                read -rp "  Carpeta local: " pl_dest || return 0
+                pl_dest="$(trim_input "$(strip_wrapping_quotes "$pl_dest")")"
+                [[ -z "$pl_dest" ]] && pl_dest="$DOWNLOADS"
+                mkdir -p "$pl_dest"
+                msg_info "Sincronizando playlist..."
+                py_core playlist sync "$pl_url" --dest "$pl_dest"
+                sleep 2
+                ;;
+            3)
+                clear_screen
+                echo -e "${BOLD}${CYAN}══ Listar archivos de audio ══${NC}\n"
+                read -rp "  Carpeta (Enter=biblioteca): " pl_dest || return 0
+                pl_dest="$(trim_input "$(strip_wrapping_quotes "$pl_dest")")"
+                [[ -z "$pl_dest" ]] && pl_dest="$DOWNLOADS"
+                py_core playlist list --dest "$pl_dest"
+                sleep 2
+                ;;
+            0) return 0 ;;
+            *) echo -e "  ${RED}Opción inválida.${NC}"; sleep 1 ;;
+        esac
+    done
+}
+
+# -------------------------------------------------------------------
+# Organize menu (reorganize music with templates)
+# -------------------------------------------------------------------
+menu_organize() {
+    while true; do
+        clear_screen
+        echo -e "${BOLD}${CYAN}══ Organizar biblioteca ══${NC}\n"
+        echo -e "  Reorganiza archivos de audio usando plantillas personalizadas."
+        echo -e "  Plantillas disponibles:"
+        echo -e "    1) {artist}/{album}/{track} - {title}  (por defecto)"
+        echo -e "    2) {artist}/{title}"
+        echo -e "    3) {album}/{track} - {title}"
+        echo -e "    4) {year}/{artist}/{album}/{track} - {title}"
+        echo -e "    5) Personalizada\n"
+        echo -e "  ${CYAN} 1)${NC} Organizar con plantilla"
+        echo -e "  ${CYAN} 0)${NC} Volver"
+        echo ""
+        read -rp "  Opción: " op || return 0
+        case "$op" in
+            1)
+                clear_screen
+                echo -e "${BOLD}${CYAN}══ Organizar archivos ══${NC}\n"
+                read -rp "  Carpeta a organizar: " org_path || return 0
+                org_path="$(trim_input "$(strip_wrapping_quotes "$org_path")")"
+                [[ -z "$org_path" ]] && org_path="$DOWNLOADS"
+                [[ ! -d "$org_path" ]] && { echo -e "  ${RED}Carpeta no encontrada.${NC}"; sleep 1; continue; }
+
+                echo -e "\n  Plantillas:"
+                echo -e "    1) {artist}/{album}/{track} - {title}"
+                echo -e "    2) {artist}/{title}"
+                echo -e "    3) {album}/{track} - {title}"
+                echo -e "    4) {year}/{artist}/{album}/{track} - {title}"
+                echo -e "    5) Personalizada"
+                read -rp "  Elige plantilla (1-5): " tpl_op || return 0
+                case "$tpl_op" in
+                    1) template="{artist}/{album}/{track} - {title}" ;;
+                    2) template="{artist}/{title}" ;;
+                    3) template="{album}/{track} - {title}" ;;
+                    4) template="{year}/{artist}/{album}/{track} - {title}" ;;
+                    5)
+                        read -rp "  Plantilla personalizada: " template || return 0
+                        template="$(trim_input "$template")"
+                        [[ -z "$template" ]] && { echo -e "  ${RED}Plantilla vacía.${NC}"; sleep 1; continue; }
+                        ;;
+                    *) echo -e "  ${RED}Opción inválida.${NC}"; sleep 1; continue ;;
+                esac
+
+                read -rp "  ¿Aplicar cambios? (s/N): " confirm || return 0
+                confirm="$(trim_input "$confirm" | tr '[:upper:]' '[:lower:]')"
+                if [[ "$confirm" == "s" || "$confirm" == "y" || "$confirm" == "yes" ]]; then
+                    msg_info "Organizando archivos..."
+                    py_core organize "$org_path" --template "$template" --apply
+                else
+                    msg_info "Simulando organización..."
+                    py_core organize "$org_path" --template "$template" --dry-run
+                fi
+                sleep 2
+                ;;
+            0) return 0 ;;
+            *) echo -e "  ${RED}Opción inválida.${NC}"; sleep 1 ;;
+        esac
+    done
+}
+
+# -------------------------------------------------------------------
+# Subscriptions menu (watch playlists for new songs)
+# -------------------------------------------------------------------
+menu_subscriptions() {
+    while true; do
+        clear_screen
+        echo -e "${BOLD}${CYAN}══ Suscripciones a playlists ══${NC}\n"
+        echo -e "  Vigila playlists y detecta canciones nuevas automáticamente."
+        echo -e "  Se integra con systemd timer para verificaciones periódicas.\n"
+        echo -e "  ${CYAN} 1)${NC} Añadir suscripción"
+        echo -e "  ${CYAN} 2)${NC} Eliminar suscripción"
+        echo -e "  ${CYAN} 3)${NC} Ver suscripciones"
+        echo -e "  ${CYAN} 4)${NC} Verificar suscripciones"
+        echo -e "  ${CYAN} 5)${NC} Configurar timer automático (systemd)"
+        echo -e "  ${CYAN} 0)${NC} Volver"
+        echo ""
+        read -rp "  Opción: " op || return 0
+        case "$op" in
+            1)
+                clear_screen
+                echo -e "${BOLD}${CYAN}══ Añadir suscripción ══${NC}\n"
+                read -rp "  URL de la playlist: " sub_url || return 0
+                sub_url="$(trim_input "$sub_url")"
+                [[ -z "$sub_url" ]] && { echo -e "  ${RED}URL vacía.${NC}"; sleep 1; continue; }
+                read -rp "  Intervalo en segundos (86400=24h): " sub_interval || return 0
+                sub_interval="$(trim_input "$sub_interval")"
+                [[ -z "$sub_interval" ]] && sub_interval="86400"
+                py_core subscriptions add "$sub_url" --interval "$sub_interval"
+                sleep 2
+                ;;
+            2)
+                clear_screen
+                echo -e "${BOLD}${CYAN}══ Eliminar suscripción ══${NC}\n"
+                py_core subscriptions list
+                echo ""
+                read -rp "  URL a eliminar: " sub_url || return 0
+                sub_url="$(trim_input "$sub_url")"
+                [[ -z "$sub_url" ]] && { echo -e "  ${RED}URL vacía.${NC}"; sleep 1; continue; }
+                py_core subscriptions remove "$sub_url"
+                sleep 2
+                ;;
+            3)
+                clear_screen
+                py_core subscriptions list
+                sleep 3
+                ;;
+            4)
+                clear_screen
+                read -rp "  ¿Descargar canciones nuevas? (s/N): " sub_dl || return 0
+                sub_dl="$(trim_input "$sub_dl" | tr '[:upper:]' '[:lower:]')"
+                if [[ "$sub_dl" == "s" || "$sub_dl" == "y" || "$sub_dl" == "yes" ]]; then
+                    py_core subscriptions check --download
+                else
+                    py_core subscriptions check
+                fi
+                sleep 2
+                ;;
+            5)
+                clear_screen
+                echo -e "${BOLD}${CYAN}══ Timer automático (systemd) ══${NC}\n"
+                echo -e "  Configura un timer de systemd para verificar suscripciones"
+                echo -e "  automáticamente cada día.\n"
+                read -rp "  ¿Habilitar timer? (s/N): " timer_confirm || return 0
+                timer_confirm="$(trim_input "$timer_confirm" | tr '[:upper:]' '[:lower:]')"
+                if [[ "$timer_confirm" == "s" || "$timer_confirm" == "y" || "$timer_confirm" == "yes" ]]; then
+                    py_core subscriptions timer --enable
+                else
+                    py_core subscriptions timer --disable
+                fi
+                sleep 2
+                ;;
+            0) return 0 ;;
+            *) echo -e "  ${RED}Opción inválida.${NC}"; sleep 1 ;;
+        esac
+    done
+}
+
 menu() {
     while true; do
         clear_screen
@@ -2448,7 +2648,10 @@ menu() {
         echo -e "  ${CYAN}16)${NC} Configurar cookies (YouTube / anti-bot)"
         echo -e "  ${CYAN}17)${NC} Ver historial de descargas"
         echo -e "  ${CYAN}18)${NC} Configurar proxy de red"
-        echo -e "  ${CYAN}19)${NC} Restablecer valores predeterminados"
+        echo -e "  ${CYAN}19)${NC} Gestor de playlists (M3U, sync)"
+        echo -e "  ${CYAN}20)${NC} Organizar biblioteca (plantillas)"
+        echo -e "  ${CYAN}21)${NC} Suscripciones a playlists"
+        echo -e "  ${CYAN}22)${NC} Restablecer valores predeterminados"
         echo -e "  ${CYAN} 0)${NC} Salir"
         echo ""
         read -rp "  Opción: " op || exit 0
@@ -2476,7 +2679,10 @@ menu() {
             16) menu_cookies ;;
             17) menu_history ;;
             18) menu_proxy ;;
-            19) menu_reset_defaults ;;
+            19) menu_playlist ;;
+            20) menu_organize ;;
+            21) menu_subscriptions ;;
+            22) menu_reset_defaults ;;
             0) save_config; echo -e "\n  ${GREEN}¡Hasta luego!${NC}\n"; exit 0 ;;
             *) echo -e "  ${RED}Opción inválida.${NC}"; sleep 1 ;;
         esac

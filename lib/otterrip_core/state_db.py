@@ -136,6 +136,17 @@ class StateDB:
                 cached_at REAL NOT NULL
             )
         """)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url TEXT NOT NULL UNIQUE,
+                interval INTEGER NOT NULL DEFAULT 86400,
+                last_check REAL NOT NULL DEFAULT 0,
+                last_run REAL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at REAL NOT NULL
+            )
+        """)
         self._conn.commit()
 
     # -- legacy migration ----------------------------------------------------
@@ -527,3 +538,53 @@ class StateDB:
         cur = self._conn.execute("DELETE FROM metadata_cache")
         self._conn.commit()
         return cur.rowcount
+
+    # =====================================================================
+    # Subscription methods
+    # =====================================================================
+
+    def subscription_add(self, url: str, interval: int = 86400, enabled: bool = True) -> int:
+        """Add a subscription. Returns the new subscription id."""
+        cur = self._conn.execute(
+            """INSERT INTO subscriptions (url, interval, enabled, created_at, last_check)
+               VALUES (?, ?, ?, ?, 0)""",
+            (url, interval, int(enabled), time.time()),
+        )
+        self._conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    def subscription_remove(self, url: str) -> bool:
+        """Remove a subscription by URL. Returns True if it existed."""
+        cur = self._conn.execute("DELETE FROM subscriptions WHERE url = ?", (url,))
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def subscription_list(self) -> list[dict]:
+        """Return all subscriptions ordered by id."""
+        rows = self._conn.execute(
+            "SELECT * FROM subscriptions ORDER BY id ASC"
+        ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["enabled"] = bool(d.get("enabled", True))
+            result.append(d)
+        return result
+
+    def subscription_update_check(self, url: str) -> bool:
+        """Update last_check timestamp for a subscription. Returns True if updated."""
+        cur = self._conn.execute(
+            "UPDATE subscriptions SET last_check = ?, last_run = ? WHERE url = ?",
+            (time.time(), time.time(), url),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def subscription_toggle(self, url: str, enabled: bool) -> bool:
+        """Toggle enabled status of a subscription. Returns True if updated."""
+        cur = self._conn.execute(
+            "UPDATE subscriptions SET enabled = ? WHERE url = ?",
+            (int(enabled), url),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0

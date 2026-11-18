@@ -31,6 +31,9 @@ from otterrip_core import normalize
 from otterrip_core import post_process
 from otterrip_core import download_engine
 from otterrip_core import ytdlp_manager
+from otterrip_core import playlist_manager
+from otterrip_core import organize
+from otterrip_core import subscriptions
 
 
 def positive_int(value: str) -> int:
@@ -240,6 +243,55 @@ def build_parser() -> argparse.ArgumentParser:
     p_report = lib_sub.add_parser("report")
     p_report.add_argument("path")
     p_report.add_argument("--save", action="store_true")
+    p_report.add_argument("--json", action="store_true", help="Output as JSON")
+    p_report.add_argument("--find-duplicates", action="store_true", help="Find acoustic duplicates")
+    p_report.add_argument("--albums", action="store_true", help="Check incomplete albums")
+    p_report.add_argument("--missing-covers", action="store_true", help="List files without covers")
+    p_report.add_argument("--missing-lyrics", action="store_true", help="List files without lyrics")
+
+    # --- playlist ---
+    p = sub.add_parser("playlist", help="Playlist management")
+    pl_sub = p.add_subparsers(dest="playlist_cmd")
+    p_export = pl_sub.add_parser("export", help="Export playlist to M3U")
+    p_export.add_argument("url", help="YouTube playlist URL")
+    p_export.add_argument("--dest", required=True, help="Destination directory")
+    p_sync = pl_sub.add_parser("sync", help="Sync playlist with local folder")
+    p_sync.add_argument("url", help="YouTube playlist URL")
+    p_sync.add_argument("--dest", required=True, help="Local directory")
+    p_sync.add_argument("--json", action="store_true", help="Output as JSON")
+    p_list = pl_sub.add_parser("list", help="List audio files in directory")
+    p_list.add_argument("--dest", default="", help="Directory to list")
+    p_list.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # --- organize ---
+    p = sub.add_parser("organize", help="Reorganize music files")
+    p.add_argument("path", help="Directory to organize")
+    p.add_argument("--template", default="{artist}/{album}/{track} - {title}",
+                   help="Organization template (default: {artist}/{album}/{track} - {title})")
+    p.add_argument("--dry-run", action="store_true", default=True,
+                   help="Preview changes without moving files")
+    p.add_argument("--apply", action="store_true", help="Apply changes (move files)")
+    p.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # --- subscriptions ---
+    p = sub.add_parser("subscriptions", help="Playlist subscriptions")
+    sub_sub = p.add_subparsers(dest="subscriptions_cmd")
+    p_add = sub_sub.add_parser("add", help="Add a subscription")
+    p_add.add_argument("url", help="YouTube playlist URL")
+    p_add.add_argument("--interval", type=int, default=86400,
+                       help="Check interval in seconds (default: 86400)")
+    p_rm = sub_sub.add_parser("remove", help="Remove a subscription")
+    p_rm.add_argument("url", help="URL to remove")
+    p_sub_list = sub_sub.add_parser("list", help="List subscriptions")
+    p_sub_list.add_argument("--json", action="store_true", help="Output as JSON")
+    p_check = sub_sub.add_parser("check", help="Check subscriptions for new songs")
+    p_check.add_argument("--url", default="", help="Check specific URL")
+    p_check.add_argument("--download", action="store_true", help="Download new songs")
+    p_check.add_argument("--json", action="store_true", help="Output as JSON")
+    p_timer = sub_sub.add_parser("timer", help="Configure systemd timer")
+    p_timer.add_argument("--enable", action="store_true", default=True,
+                         help="Enable the timer (default)")
+    p_timer.add_argument("--disable", action="store_true", help="Disable the timer")
 
     # --- repair ---
     p = sub.add_parser("repair", help="Repair metadata")
@@ -382,6 +434,9 @@ COMMAND_MAP = {
     "post-process": post_process.run_post_process,
     "download": None,  # handled inline
     "ytdlp": None,  # handled inline
+    "playlist": playlist_manager.run_playlist,
+    "organize": organize.run_organize,
+    "subscriptions": subscriptions.run_subscriptions,
 }
 
 
@@ -680,6 +735,19 @@ def main() -> int:
 
     if args.command in ("fingerprint", "cover-art", "mb-lookup"):
         return _run_new_commands(args)
+
+    if args.command == "organize":
+        # Handle --apply vs --dry-run
+        if getattr(args, "apply", False):
+            args.dry_run = False
+        return organize.run_organize(args)
+
+    if args.command == "subscriptions":
+        # Handle --disable flag for timer
+        if getattr(args, "subscriptions_cmd", None) == "timer":
+            if getattr(args, "disable", False):
+                args.enable = False
+        return subscriptions.run_subscriptions(args)
 
     if handler is None:
         print(f"Unknown command: {args.command}", file=sys.stderr)

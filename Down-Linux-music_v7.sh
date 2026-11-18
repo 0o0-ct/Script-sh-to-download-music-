@@ -669,6 +669,7 @@ LRCLIB_HOST="https://lrclib.net"
 LYRICS_LANG=""
 LYRICS_PROVIDERS="lrclib,multiweb"
 LYRICS_PREFER_SYNCED=true
+LYRICS_AUTO_ALIGN=true
 LYRICS_UPGRADE_PLAIN=false
 LYRICS_SYNC_LEVEL="line"
 LYRICS_SIDECAR=true
@@ -683,6 +684,7 @@ MAX_RETRY_PASSES=1
 
 SYNCED_DIR="$SCRIPT_DIR/letras-webs-buscar"
 SYNCEDLYRICS_AVAILABLE=false
+LIBROSA_AVAILABLE=false
 YTDLP_BIN=""
 PYBIN=""
 JS_RUNTIME_ARGS=()
@@ -1057,6 +1059,7 @@ declare -gA CONFIG_SCHEMA=(
     [LYRICS_LANG]="lang:-:"
     [LYRICS_PROVIDERS]="providers:-:lrclib,multiweb"
     [LYRICS_PREFER_SYNCED]="bool:-:true"
+    [LYRICS_AUTO_ALIGN]="bool:-:true"
     [LYRICS_UPGRADE_PLAIN]="bool:-:false"
     [LYRICS_SYNC_LEVEL]="enum:line,word,auto:line"
     [LYRICS_SIDECAR]="bool:-:true"
@@ -1076,7 +1079,7 @@ declare -gA CONFIG_SCHEMA=(
 CONFIG_KEYS=(
     QUALITY_CHOICE DUR_MIN DUR_MAX PARALLEL_JOBS ALBUM_LAYOUT FETCH_LYRICS
     LYRICS_MODE LRCLIB_HOST LYRICS_LANG LYRICS_PROVIDERS LYRICS_PREFER_SYNCED
-    LYRICS_UPGRADE_PLAIN LYRICS_SYNC_LEVEL LYRICS_SIDECAR LYRICS_EMBED_STYLE
+    LYRICS_AUTO_ALIGN LYRICS_UPGRADE_PLAIN LYRICS_SYNC_LEVEL LYRICS_SIDECAR LYRICS_EMBED_STYLE
     LYRICS_MIN_CONFIDENCE LYRICS_OFFSET_MS LAST_DOWNLOAD_FOLDER COVER_LOCAL COOKIES_BROWSER
     COOKIES_FILE OTTERRIP_PROXY OTTERRIP_NOTIFY OTTERRIP_CHECK_UPDATES
 )
@@ -1155,6 +1158,8 @@ config_apply_value() {
         OTTERRIP_PROXY)
             if [[ -n "$value" ]]; then
                 OTTERRIP_PROXY="$(normalize_proxy "$value")"
+            else
+                OTTERRIP_PROXY=""
             fi
             ;;
         *)
@@ -1495,6 +1500,24 @@ PYEOF
     fi
 }
 
+refresh_librosa_state() {
+    # Librosa es opcional: habilita la alineación automática de letras con
+    # el audio (LYRICS_AUTO_ALIGN). Sin él, la alineación se omite con aviso.
+    if "${PYBIN:-python3}" - "$SYNCED_DIR" >/dev/null 2>&1 <<'PYEOF'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import librosa  # noqa: F401
+except Exception:
+    sys.exit(1)
+PYEOF
+    then
+        LIBROSA_AVAILABLE=true
+    else
+        LIBROSA_AVAILABLE=false
+    fi
+}
+
 provider_label() {
     local base="LRCLIB"
     case "$LYRICS_PROVIDERS" in
@@ -1503,7 +1526,7 @@ provider_label() {
         *) base="LRCLIB + Multi-Web" ;;
     esac
     if [[ "$SYNCEDLYRICS_AVAILABLE" != "true" && "$LYRICS_PROVIDERS" != "lrclib" ]]; then
-        base="$base (syncedlyrics no instalado)"
+        base="$base (falta el buscador web; opción 7)"
     fi
     printf '%s' "$base"
 }
@@ -1529,6 +1552,7 @@ DEPS_CACHE_KEYS=(
     CACHED_PYBIN
     CACHED_YTDLP_BIN
     CACHED_SYNCEDLYRICS_AVAILABLE
+    CACHED_LIBROSA_AVAILABLE
     CACHED_JS_ARGS
     CACHED_TIMESTAMP
 )
@@ -1538,7 +1562,7 @@ deps_cache_key_allowed() {
     case "${1-}" in
         CACHED_OTTERRIP_VERSION|CACHED_LIB_DIR|CACHED_REQUIREMENTS_FILE|\
         CACHED_PYBIN|CACHED_YTDLP_BIN|CACHED_SYNCEDLYRICS_AVAILABLE|\
-        CACHED_JS_ARGS|CACHED_TIMESTAMP) return 0 ;;
+        CACHED_LIBROSA_AVAILABLE|CACHED_JS_ARGS|CACHED_TIMESTAMP) return 0 ;;
     esac
     return 1
 }
@@ -1610,6 +1634,7 @@ write_deps_cache() {
         printf 'CACHED_PYBIN=%s\n' "$PYBIN"
         printf 'CACHED_YTDLP_BIN=%s\n' "$YTDLP_BIN"
         printf 'CACHED_SYNCEDLYRICS_AVAILABLE=%s\n' "${SYNCEDLYRICS_AVAILABLE:-false}"
+        printf 'CACHED_LIBROSA_AVAILABLE=%s\n' "${LIBROSA_AVAILABLE:-false}"
         local _js=""
         if ((${#JS_RUNTIME_ARGS[@]})); then
             _js="$(printf ' %s' "${JS_RUNTIME_ARGS[@]}")"
@@ -1641,6 +1666,7 @@ install_deps() {
         PYBIN="$CACHED_PYBIN"
         export YTDLP_BIN="$CACHED_YTDLP_BIN"
         SYNCEDLYRICS_AVAILABLE="${CACHED_SYNCEDLYRICS_AVAILABLE:-false}"
+        LIBROSA_AVAILABLE="${CACHED_LIBROSA_AVAILABLE:-false}"
         JS_RUNTIME_ARGS=()
         if [[ -n "${CACHED_JS_ARGS:-}" ]]; then
             read -r -a JS_RUNTIME_ARGS <<< "${CACHED_JS_ARGS}"
@@ -1699,6 +1725,7 @@ install_deps() {
         echo "  ${RED}✘${NC} syncedlyrics no instalado; Multi-Web no está disponible"
     fi
 
+    refresh_librosa_state
     # Avisos (yt-dlp antiguo, etc.) detectados por el diagnóstico
     py_core doctor 2>/dev/null | awk '/^  !/ { p=1; print; next } /^      →/ { if (p) print; next } { p=0 }' || true
 
@@ -2190,6 +2217,11 @@ lyrics_common_args() {
     LYRICS_ARGS=(--host "$LRCLIB_HOST" --mode "$LYRICS_MODE" --providers "$LYRICS_PROVIDERS" --synced-dir "$SYNCED_DIR")
     [[ -n "$LYRICS_LANG" ]] && LYRICS_ARGS+=(--lang "$LYRICS_LANG")
     [[ "$LYRICS_PREFER_SYNCED" == "false" ]] && LYRICS_ARGS+=(--plain-ok)
+    # Auto-align solo si el backend instalado soporta la alineación (modulo
+    # align.py).  Un backend antiguo (script-only) rechazaría el flag
+    # desconocido y perdería la búsqueda completa de letras.
+    [[ "$LYRICS_AUTO_ALIGN" == "true" && -f "$LIB_DIR/otterrip_core/align.py" ]] \
+        && LYRICS_ARGS+=(--auto-align)
     [[ "$LYRICS_UPGRADE_PLAIN" == "true" ]] && LYRICS_ARGS+=(--upgrade-plain)
     [[ "$LYRICS_SYNC_LEVEL" != "line" ]] && LYRICS_ARGS+=(--sync-level "$LYRICS_SYNC_LEVEL")
     [[ "$LYRICS_SIDECAR" == "true" ]] && LYRICS_ARGS+=(--sidecar)
@@ -2301,41 +2333,44 @@ menu_reset_defaults() {
     echo -e "    · Letras incrustadas en la pista de audio (LYRICS_MODE=embed)"
     echo -e "    · Letras sincronizadas según duración (LYRICS_PREFER_SYNCED=true)"
     echo -e "    · Nivel de sincronización: línea (LYRICS_SYNC_LEVEL=line)"
+    echo -e "    · Alineación automática con el audio (LYRICS_AUTO_ALIGN=true)"
     echo -e "    · Estilo de inserción: LRC (LYRICS_EMBED_STYLE=lrc)\n"
     read -rp "  ¿Continuar? (s/N): " confirm || return 0
     [[ "${confirm,,}" == "s" ]] || { echo -e "  ${YELLOW}Cancelado.${NC}"; sleep 1; return 0; }
 
-    # Restaurar calidad por defecto (MP3 320 kbps)
-    apply_quality_choice "1"
+    # Restaurar TODAS las claves del esquema a su valor por defecto.
+    # El esquema (CONFIG_SCHEMA) es la única fuente de verdad: iterar sobre
+    # CONFIG_KEYS evita que una clave nueva quede sin restablecer.
+    local key="" entry="" type="" spec="" def="" rest=""
+    for key in "${CONFIG_KEYS[@]}"; do
+        entry="${CONFIG_SCHEMA[$key]:-}"
+        [[ -n "$entry" ]] || continue
+        type="${entry%%:*}"
+        rest="${entry#*:}"
+        spec="${rest%%:*}"
+        def="${rest#*:}"
+        config_apply_value "$key" "$def"
+    done
 
-    # Restaurar todos los valores del esquema de configuración a sus defaults
-    QUALITY_CHOICE="1"
-    DUR_MIN="60"
-    DUR_MAX="480"
-    PARALLEL_JOBS="3"
-    ALBUM_LAYOUT="single"
+    # Garantías explícitas de letras (independientes del esquema): siempre
+    # activadas, incrustadas en la pista de audio y sincronizadas.
     FETCH_LYRICS="true"
     LYRICS_MODE="embed"
-    LRCLIB_HOST="https://lrclib.net"
-    LYRICS_LANG=""
-    LYRICS_PROVIDERS="lrclib,multiweb"
     LYRICS_PREFER_SYNCED="true"
-    LYRICS_UPGRADE_PLAIN="false"
+    LYRICS_AUTO_ALIGN="true"
     LYRICS_SYNC_LEVEL="line"
-    LYRICS_SIDECAR="true"
     LYRICS_EMBED_STYLE="lrc"
+    LYRICS_PROVIDERS="lrclib,multiweb"
+    LYRICS_SIDECAR="true"
+    LYRICS_UPGRADE_PLAIN="false"
     LYRICS_MIN_CONFIDENCE="0"
     LYRICS_OFFSET_MS="0"
-    LAST_DOWNLOAD_FOLDER="Music"
-    COVER_LOCAL=""
-    COOKIES_BROWSER=""
-    COOKIES_FILE=""
-    OTTERRIP_PROXY=""
-    OTTERRIP_NOTIFY="true"
-    OTTERRIP_CHECK_UPDATES="true"
 
-    # Aplicar calidad (actualiza AFMT, AQ, PP_VALUE, PROFILE)
-    apply_quality_choice "$QUALITY_CHOICE"
+    # Paralelismo a 3 salvo que se haya fijado por entorno (misma regla que
+    # usa load_config). DUR_MIN/DUR_MAX y demás ya se aplicaron arriba.
+    if [[ "$ENV_PARALLEL_SET" != "true" ]]; then
+        PARALLEL_JOBS="$(normalize_jobs "3")"
+    fi
 
     # Guardar configuración persistente
     save_config
@@ -2665,66 +2700,112 @@ toggle_var() {
     if [[ "${!name}" == "true" ]]; then printf -v "$name" '%s' false; else printf -v "$name" '%s' true; fi
 }
 
+# Rellena una etiqueta con espacios hasta N columnas VISIBLES (UTF-8).
+# El printf %-Ns de Bash cuenta bytes, no caracteres: con tildes ("Precisión",
+# "corrección") desalinea las columnas del menú. ${#str} sí cuenta caracteres.
+pad_cols() {
+    local label="${1-}" width="${2:-20}" pad=""
+    if (( ${#label} < width )); then
+        printf -v pad '%*s' $(( width - ${#label} )) ""
+        printf '%s%s' "$label" "$pad"
+    else
+        printf '%s' "$label"
+    fi
+}
+
 menu_lyrics() {
     while true; do
         clear_screen
         refresh_syncedlyrics_state
-        local state mode_label multi
+        local state mode_label multi prefer_label syncLabel upgrade_label
+        local align_label="" align_hint=""
         if [[ "$FETCH_LYRICS" == "true" ]]; then
-            state="${GREEN}ACTIVO${NC}"
+            state="${GREEN}ACTIVADA${NC}"
         else
-            state="${RED}INACTIVO${NC}"
+            state="${RED}DESACTIVADA${NC}"
         fi
         if [[ "$LYRICS_MODE" == "embed" ]]; then
-            mode_label="Incrustar en tags (USLT/SYLT, FLAC, M4A)"
+            mode_label="dentro de la canción (las muestra tu reproductor)"
         else
-            mode_label="Archivo .lrc/.txt separado"
+            mode_label="en un archivo aparte (.lrc / .txt)"
         fi
+        multi="$(provider_label)"
         if [[ "$SYNCEDLYRICS_AVAILABLE" == "true" ]]; then
-            multi="${GREEN}$(provider_label)${NC} (syncedlyrics disponible)"
+            multi="${GREEN}$multi${NC}"
         else
-            multi="${CYAN}$(provider_label)${NC}"
+            multi="${CYAN}$multi${NC}"
+        fi
+        if [[ "$LYRICS_PREFER_SYNCED" == "true" ]]; then
+            prefer_label="${GREEN}sincronizadas (línea a línea, tipo karaoke)${NC}"
+        else
+            prefer_label="cualquiera (no exige la versión sincronizada)"
+        fi
+        case "$LYRICS_SYNC_LEVEL" in
+            line) syncLabel="línea completa (cada línea aparece a su hora)" ;;
+            word) syncLabel="palabra a palabra ${YELLOW}(experimental)${NC}" ;;
+            auto) syncLabel="automática" ;;
+            *) syncLabel="$LYRICS_SYNC_LEVEL" ;;
+        esac
+        if [[ "$LYRICS_UPGRADE_PLAIN" == "true" ]]; then
+            upgrade_label="sí (si encuentra una sincronizada, sustituye la simple)"
+        else
+            upgrade_label="no (la letra simple se queda como está)"
+        fi
+        if [[ "$LYRICS_AUTO_ALIGN" == "true" ]]; then
+            if [[ "$LIBROSA_AVAILABLE" == "true" ]]; then
+                align_label="${GREEN}ACTIVADA${NC} ${DIM}(motor listo)${NC}"
+                align_hint="${DIM}si la letra va adelantada o atrasada del cantante, la endereza sola${NC}"
+            else
+                align_label="${YELLOW}ACTIVADA, falta el motor${NC} ${DIM}(instálalo en la opción 17)${NC}"
+                align_hint="${DIM}sin el motor aún no puede corregir nada${NC}"
+            fi
+        else
+            align_label="${RED}desactivada${NC}"
+            align_hint="${DIM}endereza la letra cuando va adelantada o atrasada (opción 16)${NC}"
         fi
         echo -e "${BOLD}${CYAN}══ Configuración de letras ══${NC}\n"
-        echo -e "  OtterRip usa LRCLIB y Multi-Web (sin API key)."
-        echo -e "  ${DIM}Toda letra se valida por contenido, título y artista antes de guardarse.${NC}"
+        echo -e "  Buscamos letras gratis (LRCLIB y Multi-Web): sin cuentas ni claves."
+        echo -e "  ${DIM}Antes de guardar, se comprueba que la letra coincida con la canción.${NC}"
         echo ""
-        printf '  %sEstado:%s        %b\n' "$BOLD" "$NC" "$state"
-        printf '  %sModo:%s          %s\n' "$BOLD" "$NC" "$mode_label"
-        printf '  %sProveedor:%s     %b\n' "$BOLD" "$NC" "$multi"
-        printf '  %sServidor API:%s  %s%s%s\n' "$BOLD" "$NC" "$MAGENTA" "$LRCLIB_HOST" "$NC"
-        printf '  %sIdioma:%s        %s\n' "$BOLD" "$NC" "${LYRICS_LANG:-cualquiera}"
-        printf '  %sSincronizadas:%s %s   %sSustituir plana:%s %s\n' "$BOLD" "$NC" \
-            "$([[ "$LYRICS_PREFER_SYNCED" == "true" ]] && echo prioritarias || echo 'sin prioridad')" \
-            "$BOLD" "$NC" "$([[ "$LYRICS_UPGRADE_PLAIN" == "true" ]] && echo sí || echo no)"
-        local syncLabel=""
-        case "$LYRICS_SYNC_LEVEL" in
-            line) syncLabel="línea" ;;
-            word) syncLabel="palabra (exp.)" ;;
-            auto) syncLabel="auto" ;;
-        esac
-        printf '  %sNivel sync:%s    %s   %sSidecar .lrc:%s %s\n' \
-            "$BOLD" "$NC" "$syncLabel" "$BOLD" "$NC" \
-            "$([[ "$LYRICS_SIDECAR" == "true" ]] && echo sí || echo no)"
-        printf '  %sConfianza mín:%s %s   %sDesfase ms:%s  %s\n' \
-            "$BOLD" "$NC" "$(( LYRICS_MIN_CONFIDENCE / 10 ))%" "$BOLD" "$NC" "${LYRICS_OFFSET_MS}ms"
+        echo -e "  ${BOLD}── Búsqueda ──${NC}"
+        printf '  %s%s%s %b\n' "$BOLD" "$(pad_cols "Estado:")" "$NC" "$state"
+        printf '  %s%s%s %b\n' "$BOLD" "$(pad_cols "Origen:")" "$NC" "$multi"
+        printf '  %s%s%s %s%s%s\n' "$BOLD" "$(pad_cols "Servidor:")" "$NC" "$MAGENTA" "$LRCLIB_HOST" "$NC"
+        printf '  %s%s%s %s\n' "$BOLD" "$(pad_cols "Idioma preferido:")" "$NC" "${LYRICS_LANG:-cualquiera}"
+        printf '  %s%s%s %s%% %b\n' "$BOLD" "$(pad_cols "Calidad mínima:")" "$NC" \
+            "$(( LYRICS_MIN_CONFIDENCE / 10 ))" "${DIM}(0 = acepta todo; 100 = solo coincidencias seguras)${NC}"
+        echo -e "  ${BOLD}── Dónde se guardan ──${NC}"
+        printf '  %s%s%s %s\n' "$BOLD" "$(pad_cols "Letras:")" "$NC" "$mode_label"
+        printf '  %s%s%s %s %b\n' "$BOLD" "$(pad_cols "Copia .lrc aparte:")" "$NC" \
+            "$([[ "$LYRICS_SIDECAR" == "true" ]] && echo sí || echo no)" \
+            "${DIM}(opción 13)${NC}"
+        echo -e "  ${BOLD}── Sincronización con la música ──${NC}"
+        printf '  %s%s%s %b\n' "$BOLD" "$(pad_cols "Tipo preferido:")" "$NC" "$prefer_label"
+        printf '  %s%s%s %b\n' "$BOLD" "$(pad_cols "Precisión:")" "$NC" "$syncLabel"
+        printf '  %s%s%s %b\n' "$BOLD" "$(pad_cols "Mejora letra simple:")" "$NC" "$upgrade_label"
+        printf '  %s%s%s %b\n' "$BOLD" "$(pad_cols "Auto-corrección:")" "$NC" "$align_label"
+        [[ -n "$align_hint" ]] && printf '  %s %b\n' "$(pad_cols "")" "$align_hint"
+        printf '  %s%s%s %s ms %b\n' "$BOLD" "$(pad_cols "Ajuste manual:")" "$NC" \
+            "${LYRICS_OFFSET_MS}" "${DIM}(opción 15: + retrasa, - adelanta)${NC}"
         echo ""
-        echo -e "  ${CYAN}1)${NC} Activar / desactivar búsqueda de letras"
-        echo -e "  ${CYAN}2)${NC} Modo: incrustar en el archivo de audio"
-        echo -e "  ${CYAN}3)${NC} Modo: guardar .lrc / .txt separado"
-        echo -e "  ${CYAN}4)${NC} Servidor oficial (https://lrclib.net)"
-        echo -e "  ${CYAN}5)${NC} Servidor local (http://localhost:3300)"
-        echo -e "  ${CYAN}6)${NC} URL de servidor personalizada"
-        echo -e "  ${CYAN}7)${NC} Verificar / reinstalar syncedlyrics (Multi-Web)"
-        echo -e "  ${CYAN}8)${NC} Idioma preferido (es, en, pt, fr, it, de; vacío = cualquiera)"
-        echo -e "  ${CYAN}9)${NC} Proveedores (LRCLIB / Multi-Web / ambos)"
-        echo -e "  ${CYAN}10)${NC} Priorizar letras sincronizadas (sí/no)"
-        echo -e "  ${CYAN}11)${NC} Sustituir letra plana incrustada por una sincronizada (sí/no)"
-        echo -e "  ${CYAN}12)${NC} Nivel de sincronización (línea/palabra/auto)"
-        echo -e "  ${CYAN}13)${NC} Generar sidecar .lrc junto al audio (sí/no)"
-        echo -e "  ${CYAN}14)${NC} Confianza mínima (0-100 %, < esto = advertencia)"
-        echo -e "  ${CYAN}15)${NC} Desfase global en ms (+ retrasa, - adelanta)"
-        echo -e "  ${CYAN}0)${NC} Volver"
+        printf '  %s%-3s%s %s\n' "$CYAN" "1)" "$NC" "Activar / desactivar la búsqueda de letras"
+        printf '  %s%-3s%s %s\n' "$CYAN" "2)" "$NC" "Guardar las letras DENTRO de la canción (recomendado)"
+        printf '  %s%-3s%s %s\n' "$CYAN" "3)" "$NC" "Guardar las letras en un archivo aparte (.lrc/.txt)"
+        printf '  %s%-3s%s %s\n' "$CYAN" "4)" "$NC" "Servidor oficial de letras (https://lrclib.net)"
+        printf '  %s%-3s%s %s\n' "$CYAN" "5)" "$NC" "Servidor local (http://localhost:3300)"
+        printf '  %s%-3s%s %s\n' "$CYAN" "6)" "$NC" "Servidor personalizado (tu propia dirección)"
+        printf '  %s%-3s%s %s\n' "$CYAN" "7)" "$NC" "Reinstalar el buscador web de letras (Multi-Web)"
+        printf '  %s%-3s%s %s\n' "$CYAN" "8)" "$NC" "Idioma preferido (es, en, pt, fr, it, de; vacío = cualquiera)"
+        printf '  %s%-3s%s %s\n' "$CYAN" "9)" "$NC" "Origen de las letras (LRCLIB / web / ambos)"
+        printf '  %s%-3s%s %s\n' "$CYAN" "10)" "$NC" "Buscar siempre letras sincronizadas primero (sí/no)"
+        printf '  %s%-3s%s %s\n' "$CYAN" "11)" "$NC" "Sustituir letra simple por sincronizada si aparece (sí/no)"
+        printf '  %s%-3s%s %s\n' "$CYAN" "12)" "$NC" "Precisión de la sincronización (línea / palabra / auto)"
+        printf '  %s%-3s%s %s\n' "$CYAN" "13)" "$NC" "Crear además una copia .lrc junto a la canción (sí/no)"
+        printf '  %s%-3s%s %s\n' "$CYAN" "14)" "$NC" "Calidad mínima para aceptar una letra (0-100 %)"
+        printf '  %s%-3s%s %s\n' "$CYAN" "15)" "$NC" "Mover todas las letras a mano (+ retrasa, - adelanta)"
+        printf '  %s%-3s%s %s\n' "$CYAN" "16)" "$NC" "Auto-corrección de letra adelantada/atrasada (sí/no)"
+        printf '  %s%-3s%s %s\n' "$CYAN" "17)" "$NC" "Instalar el motor de auto-corrección (librosa)"
+        printf '  %s%-3s%s %s\n' "$CYAN" "0)" "$NC" "Volver"
         echo ""
         local l=""
         read -rp "  Opción: " l || return 0
@@ -2742,8 +2823,8 @@ menu_lyrics() {
                 fi
                 sleep 1
                 ;;
-            2) LYRICS_MODE="embed"; echo -e "  ${GREEN}Modo: incrustar en tags.${NC}"; sleep 0.8 ;;
-            3) LYRICS_MODE="file";  echo -e "  ${GREEN}Modo: archivo .lrc/.txt.${NC}"; sleep 0.8 ;;
+            2) LYRICS_MODE="embed"; echo -e "  ${GREEN}Las letras se guardarán dentro de la canción.${NC}"; sleep 0.8 ;;
+            3) LYRICS_MODE="file";  echo -e "  ${GREEN}Las letras se guardarán en un archivo aparte.${NC}"; sleep 0.8 ;;
             4) LRCLIB_HOST="https://lrclib.net"; echo -e "  ${GREEN}Servidor oficial configurado.${NC}"; sleep 0.8 ;;
             5) LRCLIB_HOST="http://localhost:3300"; echo -e "  ${GREEN}Servidor local configurado.${NC}"; sleep 0.8 ;;
             6)
@@ -2807,8 +2888,8 @@ menu_lyrics() {
                 esac
                 sleep 0.8
                 ;;
-            10) toggle_var LYRICS_PREFER_SYNCED; echo -e "  Priorizar sincronizadas: $LYRICS_PREFER_SYNCED"; sleep 0.8 ;;
-            11) toggle_var LYRICS_UPGRADE_PLAIN; echo -e "  Sustituir plana por sincronizada: $LYRICS_UPGRADE_PLAIN"; sleep 0.8 ;;
+            10) toggle_var LYRICS_PREFER_SYNCED; echo -e "  Buscar sincronizadas primero: $LYRICS_PREFER_SYNCED"; sleep 0.8 ;;
+            11) toggle_var LYRICS_UPGRADE_PLAIN; echo -e "  Sustituir letra simple por sincronizada: $LYRICS_UPGRADE_PLAIN"; sleep 0.8 ;;
             12)
                 echo -e "  ${CYAN}1)${NC} Línea (por defecto)   ${CYAN}2)${NC} Palabra (experimental)   ${CYAN}3)${NC} Auto"
                 local sl=""
@@ -2821,16 +2902,16 @@ menu_lyrics() {
                 esac
                 sleep 0.8
                 ;;
-            13) toggle_var LYRICS_SIDECAR; echo -e "  Sidecar .lrc: $LYRICS_SIDECAR"; sleep 0.8 ;;
+            13) toggle_var LYRICS_SIDECAR; echo -e "  Copia .lrc aparte: $LYRICS_SIDECAR"; sleep 0.8 ;;
             14)
                 local cv=""
-                read -rp "  Confianza mínima (0-100, Enter=60): " cv || true
+                read -rp "  Calidad mínima para aceptar letras (0-100, Enter=60): " cv || true
                 if [[ "$cv" =~ ^[0-9]+$ ]] && (( cv >= 0 && cv <= 100 )); then
                     LYRICS_MIN_CONFIDENCE=$(( cv * 10 ))
-                    echo -e "  ${GREEN}Confianza mínima: ${cv}%${NC}"
+                    echo -e "  ${GREEN}Calidad mínima: ${cv}%${NC}"
                 elif [[ -z "$cv" ]]; then
                     LYRICS_MIN_CONFIDENCE=600
-                    echo -e "  ${GREEN}Confianza mínima: 60%${NC}"
+                    echo -e "  ${GREEN}Calidad mínima: 60%${NC}"
                 else
                     echo -e "  ${RED}✘ Valor inválido (0-100).${NC}"
                 fi
@@ -2838,17 +2919,56 @@ menu_lyrics() {
                 ;;
             15)
                 local ov=""
-                read -rp "  Desfase en ms (+ retrasa, - adelanta, Enter=0): " ov || true
+                read -rp "  Mover las letras en ms (+ retrasa, - adelanta, Enter=0): " ov || true
                 if [[ "$ov" =~ ^[+-]?[0-9]+$ ]]; then
                     LYRICS_OFFSET_MS="$ov"
-                    echo -e "  ${GREEN}Desfase: ${ov}ms${NC}"
+                    echo -e "  ${GREEN}Ajuste manual: ${ov} ms${NC}"
                 elif [[ -z "$ov" ]]; then
                     LYRICS_OFFSET_MS=0
-                    echo -e "  ${GREEN}Desfase: 0ms${NC}"
+                    echo -e "  ${GREEN}Ajuste manual: 0 ms${NC}"
                 else
                     echo -e "  ${RED}✘ Valor inválido.${NC}"
                 fi
                 sleep 0.8
+                ;;
+            16)
+                toggle_var LYRICS_AUTO_ALIGN
+                if [[ "$LYRICS_AUTO_ALIGN" == "true" ]]; then
+                    echo -e "  ${GREEN}Auto-corrección ACTIVADA.${NC}"
+                    echo -e "  ${DIM}Descargas nuevas: la letra se endereza sola si va adelantada/atrasada.${NC}"
+                    if [[ "$LIBROSA_AVAILABLE" != "true" ]]; then
+                        echo -e "  ${YELLOW}⚠ Falta el motor: instálalo en la opción 17 para que funcione.${NC}"
+                    fi
+                else
+                    echo -e "  ${YELLOW}Auto-corrección DESACTIVADA.${NC}"
+                fi
+                sleep 1.2
+                ;;
+            17)
+                if [[ "$LIBROSA_AVAILABLE" == "true" ]]; then
+                    echo -e "  ${GREEN}✔ El motor de auto-corrección (librosa) ya está instalado.${NC}"
+                    sleep 0.8
+                elif confirm "¿Instalar el motor de auto-corrección (librosa, ~60 MB) en el entorno aislado de OtterRip?"; then
+                    echo -e "  ${YELLOW}⚙${NC} Instalando el motor de auto-corrección..."
+                    if [[ "$PYBIN" != "$VENV_DIR/bin/python" ]]; then
+                        if create_venv; then
+                            PYBIN="$VENV_DIR/bin/python"
+                            venv_pip_install -r "$REQUIREMENTS_FILE" || true
+                            venv_pip_install librosa || true
+                        fi
+                    else
+                        venv_pip_install librosa || true
+                    fi
+                    refresh_librosa_state
+                    if [[ "$LIBROSA_AVAILABLE" == "true" ]]; then
+                        echo -e "  ${GREEN}✔ Motor instalado. La auto-corrección ya funciona (opción 16).${NC}"
+                    else
+                        echo -e "  ${RED}✘ No se pudo instalar el motor.${NC}"
+                    fi
+                    sleep 1.5
+                else
+                    echo -e "  ${DIM}Omitido. La auto-corrección seguirá sin funcionar (no rompe nada).${NC}"; sleep 0.6
+                fi
                 ;;
             0|"") return 0 ;;
             *) echo -e "  ${RED}Opción inválida.${NC}"; sleep 1 ;;
@@ -3223,64 +3343,23 @@ status_label() {
 #   [VIDEO_ID] al final
 # Y elimina el artista duplicado al inicio si ya está en el nombre.
 clean_filenames() {
-    local dest="${1-}" artist="${2-}"
+    # Limpia la basura de YouTube ([Official Music Video], [4K Remaster],
+    # [VIDEO_ID], …) de los nombres de archivo del destino y reescribe los
+    # manifiestos de sesión (JSON por línea) para que apunten a los nombres
+    # nuevos. Sin jq: todo lo hace el backend Python (clean-names).
+    # El nombre conserva la forma "Artista - Canción"; solo se elimina el
+    # prefijo de artista DUPLICADO (caso YouTube Music).
+    local dest="${1-}"; shift || true
     [[ -d "$dest" ]] || return 0
-    local py="$(python3 - <<'PYEOF' 2>/dev/null
-import sys, os, re
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
-from otterrip_core.query_clean import clean_title, clean_artist
-
-dest = sys.argv[1]
-artist = sys.argv[2] if len(sys.argv) > 2 else ""
-
-cleaned_artist = clean_artist(artist) if artist else ""
-
-exts = {".mp3", ".m4a", ".flac", ".webm", ".mkv", ".mp4", ".lrc", ".jpg", ".webp", ".vtt"}
-compound_exts = (".en.lrc", ".en.vtt")
-
-renamed = 0
-for name in sorted(os.listdir(dest)):
-    fpath = os.path.join(dest, name)
-    if not os.path.isfile(fpath):
-        continue
-    name_lower = name.lower()
-    # Manejar extensiones compuestas como .en.lrc, .en.vtt
-    if name_lower.endswith(compound_exts):
-        for ce in compound_exts:
-            if name_lower.endswith(ce):
-                base = name[:-len(ce)]
-                ext = ce
-                break
-    else:
-        base, ext = os.path.splitext(name)
-        ext = ext.lower()
-    if ext not in exts:
-        continue
-    # Usar clean_title para eliminar ruido de YouTube del nombre
-    new_base = clean_title(base)
-    # Eliminar artista duplicado al inicio si coincide con el artista conocido
-    if cleaned_artist and new_base:
-        norm = new_base.replace("–", "-").replace("—", "-")
-        ca_norm = cleaned_artist.replace("–", "-").replace("—", "-")
-        prefix = ca_norm + " - "
-        if norm.lower().startswith(prefix.lower()):
-            new_base = new_base[len(prefix):].strip()
-        prefix2 = ca_norm + ":"
-        if norm.lower().startswith(prefix2.lower()):
-            new_base = new_base[len(prefix2):].strip()
-    new_base = new_base.strip(" -–—_|.")
-    if not new_base or new_base == base:
-        continue
-    new_name = new_base + ext
-    new_path = os.path.join(dest, new_name)
-    if not os.path.exists(new_path):
-        os.rename(fpath, new_path)
-        renamed += 1
-print(renamed)
-PYEOF
-)"
-    [[ -z "$py" ]] && return 0
-    echo -e "  ${DIM}· Nombres de archivo limpiados: ${py}${NC}"
+    local -a manifests=() m="" manifest_args=()
+    for m in "$@"; do
+        [[ -n "$m" && -f "$m" ]] && manifests+=("$m")
+    done
+    # --manifest es "append": una opción por cada manifiesto.
+    for m in "${manifests[@]}"; do
+        manifest_args+=(--manifest "$m")
+    done
+    py_core clean-names "$dest" ${manifest_args[@]+"${manifest_args[@]}"} || true
 }
 
 
@@ -3292,6 +3371,8 @@ post_process_session() {
     JOB_NEW="$(count_lines "$session_final")"
     if (( JOB_NEW == 0 )); then
         echo -e "  ${GREEN}✔ No hay pistas nuevas que requieran procesamiento (ya descargadas).${NC}"
+        # Aún así, limpiar nombres de archivo existentes con basura de YouTube
+        clean_filenames "$dest"
         return 0
     fi
 
@@ -3312,19 +3393,17 @@ post_process_session() {
         [[ "$JOB_COVER_MISSING" =~ ^[0-9]+$ ]] || JOB_COVER_MISSING=0
     fi
     log_event INFO "verify-session rc=$vrc ok=$JOB_OK fallidas=$JOB_VERIFY_FAILED dest=$dest"
-    (( JOB_OK == 0 )) && return 0
 
     echo -e "  ${YELLOW}⚙${NC} Reparando metadatos${COVER_LOCAL:+ y portada manual} de ${JOB_OK} pista(s)..."
     fix_metadata_batch "$dest" "$AFMT" "$verified" "$COVER_LOCAL" "$workdir" || true
 
     # Limpiar nombres de archivo: eliminar basura de YouTube (corchetes,
-    # paréntesis, ID de video, etc.) para que quede solo Artista - Canción.
-    local lyr_artist=""
-    if [[ -f "$verified" ]] && command -v jq >/dev/null 2>&1; then
-        lyr_artist="$(jq -r 'select(.artist) | .artist' "$verified" 2>/dev/null | head -n1)"
-        lyr_artist="$(trim_input "$lyr_artist")"
-    fi
-    clean_filenames "$dest" "$lyr_artist"
+    # paréntesis, ID de video, etc.) para que quede solo "Artista - Canción".
+    # CRÍTICO: se ejecuta DESPUÉS de verify-session (que localiza las pistas
+    # por el ID de YouTube en el nombre) y reescribe los manifiestos
+    # session.final y session.verified, para que el paso de letras encuentre
+    # los archivos ya renombrados.
+    clean_filenames "$dest" "$session_final" "$verified"
 
     if [[ "$FETCH_LYRICS" == "true" ]]; then
         echo -e "  ${YELLOW}⚙${NC} Buscando e incrustando letras (${JOB_OK} en cola)..."
@@ -4114,7 +4193,9 @@ menu_lyrics_manager() {
                 t="$ASKED_PATH"
                 read -rp "  Desfase en milisegundos (+ retrasa, - adelanta): " ms || continue
                 if [[ "$ms" =~ ^[+-]?[0-9]+$ ]]; then
-                    py_core lyrics-tool shift "$t" "$ms" || true
+                    # lyrics-manage shift corrige el tag incrustado Y el .lrc
+                    # sidecar; lyrics-tool shift solo tocaría el sidecar.
+                    py_core lyrics-manage shift "$t" "$ms" || true
                 else
                     echo -e "  ${RED}✘ Valor inválido.${NC}"
                 fi
@@ -4491,6 +4572,7 @@ main() {
         return 1
     fi
     refresh_syncedlyrics_state || true
+    refresh_librosa_state || true
     recover_sessions || true
 
     # Aviso de versión nueva (no bloqueante, solo con terminal interactivo).

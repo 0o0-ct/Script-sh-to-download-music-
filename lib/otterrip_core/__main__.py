@@ -5,8 +5,8 @@ Dispatches subcommands invoked from the Bash wrapper via:
     python3 -m otterrip_core <subcommand> [args...]
 
 Available subcommands:
-    fix-metadata, lyrics, lyrics-tool, verify-session, merge-sessions,
-    classify-log, doctor, queue, library, repair, convert
+    fix-metadata, lyrics, lyrics-tool, verify-session, clean-names,
+    merge-sessions, classify-log, doctor, queue, library, repair, convert
 """
 import sys
 import argparse
@@ -16,6 +16,7 @@ from otterrip_core import doctor
 from otterrip_core import fix_metadata
 from otterrip_core import lyrics
 from otterrip_core import lyrics_tool
+from otterrip_core import clean_names
 from otterrip_core import verify_session
 from otterrip_core import merge_sessions
 from otterrip_core import classify_log
@@ -80,6 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--embed-style", default="lrc", choices=["lrc", "plain"])
     p.add_argument("--min-confidence", type=float, default=0.0)
     p.add_argument("--offset-ms", type=int, default=0)
+    p.add_argument("--auto-align", action="store_true", default=False)
     p.add_argument("--session", default="")
     p.add_argument("--summary", default="")
     p.add_argument("--overwrite", action="store_true")
@@ -121,6 +123,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--archive", required=True)
     p.add_argument("--out-ok", required=True)
     p.add_argument("--out-failed", required=True)
+
+    # --- clean-names ---
+    p = sub.add_parser(
+        "clean-names",
+        help="Remove YouTube noise from downloaded filenames",
+    )
+    p.add_argument("target", help="Destination folder to clean")
+    p.add_argument(
+        "--manifest",
+        action="append",
+        default=[],
+        help="JSON-line session manifest to rewrite after renaming",
+    )
+    p.add_argument("--dry-run", action="store_true", default=False)
 
     # --- merge-sessions ---
     p = sub.add_parser("merge-sessions", help="Merge session files")
@@ -200,6 +216,7 @@ COMMAND_MAP = {
     "lyrics": lyrics.run_lyrics,
     "lyrics-tool": lyrics_tool.run_lyrics_tool,
     "verify-session": verify_session.run_verify_session,
+    "clean-names": clean_names.run_clean_names,
     "merge-sessions": merge_sessions.run_merge_sessions,
     "classify-log": classify_log.run_classify_log,
     "queue": queue.run_queue,

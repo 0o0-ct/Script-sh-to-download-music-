@@ -1,5 +1,95 @@
 # Changelog
 
+## [Sin publicar] - 2026-11-17
+
+### Fixed
+
+- **`clean_filenames()` nunca se ejecutaba (fallo silencioso).** El heredoc
+  de Python embebido en Bash no recibía argumentos (`python3 -` deja
+  `sys.argv = ['-']`, por lo que `sys.argv[1]` lanzaba `IndexError`, y
+  `__file__` tampoco está definido al leer código de stdin). El error se
+  tragaba con `2>/dev/null`, así que los nombres de archivo nunca se
+  limpiaban. Ahora la limpieza es un subcomando del backend
+  (`py_core clean-names`) en el módulo nuevo
+  `lib/otterrip_core/clean_names.py`, con argumentos reales y sin `jq`.
+- **El renombrado rompía el paso de letras.** `clean_filenames` renombraba
+  los archivos DESPUÉS de que `verify-session` generara el manifiesto
+  `session.verified`, así que el motor de letras dejaba de encontrar las
+  pistas. Ahora el renombrado reescribe también `session.final` y
+  `session.verified` (claves `filepath` / `file`), y se ejecuta tras la
+  verificación (que localiza pistas por el ID de YouTube en el nombre) y
+  antes de las letras.
+- **La limpieza ahora cubre subtítulos compuestos y carpetas anidadas:**
+  `.en.lrc`, `.es.vtt`, `.es-419.lrc`, portadas `.jpg`/`.webp`/`.png`,
+  y archivos dentro de subcarpetas de playlist/álbum. Los archivos ya
+  limpios no se tocan y las colisiones se descartan sin sobrescribir.
+- **"Restablecer valores predeterminados" (opción 19) dejaba variables sin
+  restaurar en memoria** si el listado del esquema y el código de la
+  función se desalineaban; ahora itera `CONFIG_KEYS` usando `CONFIG_SCHEMA`
+  como única fuente de verdad, garantiza explícitamente
+  `FETCH_LYRICS=true`, `LYRICS_MODE=embed`, `LYRICS_PREFER_SYNCED=true`,
+  `LYRICS_SYNC_LEVEL=line`, `LYRICS_EMBED_STYLE=lrc`, y limpia
+  `OTTERRIP_PROXY` vacío (antes `config_apply_value` no lo borraba).
+- **El ajuste manual de desfase (Gestor avanzado → opción 4) no corregía
+  la letra incrustada.** Llamaba a `lyrics-tool shift`, que solo reescribe
+  el archivo `.lrc` sidecar; lo que se escucha en el reproductor es el tag,
+  así que el desfase seguía igual. Ahora usa `lyrics-manage shift`, que
+  actualiza SYLT + `TXXX:LYRICS` + sidecar (verificado con un MP3 real).
+- **La auto-alineación no podía leer M4A/AAC.** librosa lee el audio vía
+  libsndfile (`soundfile`), que no soporta AAC — el formato principal de
+  OtterRip — y el fallback `audioread` no está instalado, así que cada
+  pista m4a soltaba «no se pudo leer el audio» y la corrección nunca
+  actuaba. Ahora `align.py` decodifica con ffmpeg (requisito del script)
+  a PCM mono 22050 Hz por stdout cuando libsndfile falla. Verificado con
+  los m4a reales del usuario (88 pistas) y con test de regresión
+  (`TestOnsetEnvelopeM4a`).
+- **La nota de omisión de la auto-alineación se repetía una vez por pista
+  (86 líneas idénticas en una playlist real).** El texto interpolaba el
+  desfase medido, así que no era deduplicable. Ahora las notas son
+  constantes estables (`NOTE_NO_LIBROSA`, `NOTE_AUDIO_FAIL`,
+  `NOTE_NO_SIGNIFICANT`, `NOTE_UNRELIABLE`, `NOTE_EXCEEDS_DURATION`): la
+  primera ocurrencia se imprime, todas se cuentan, y al final aparece un
+  bloque «Auto-corrección de letras (resumen)» con el conteo por nota.
+
+### Added
+
+- **Alineación automática de letras con el audio (`LYRICS_AUTO_ALIGN=true`
+  por defecto).** Las letras de LRCLIB/Multi-Web están sincronizadas para
+  una grabación concreta de la canción; cuando el audio descargado es otra
+  edición (radio edit, intro distinta, versión en vivo), la letra completa
+  va adelantada o atrasada de forma constante. El módulo nuevo
+  `lib/otterrip_core/align.py` estima UN desfase constante correlacionando
+  los inicios de línea con la envolvente de onsets del audio (librosa,
+  dependencia opcional) y aplica el cambio solo si es consistente:
+  confianza ≥ 0.55 sobre la tasa de aciertos por línea, |desfase| entre
+  200 ms y ±15 s, y nunca más allá de la duración del audio (+3 s). Sin
+  librosa la alineación se omite con un aviso y no se toca nada.
+- **Opciones 16 y 17 en Configuración de letras:** activar/desactivar la
+  alineación automática e instalar librosa en el venv aislado. El estado
+  (activa, activa sin librosa, desactivada) se muestra en el menú y se
+  cachea junto al resto de dependencias. Con un backend antiguo
+  (instalación script-only) el flag `--auto-align` no se envía, para no
+  romper la búsqueda de letras con un argumento desconocido.
+- **Configuración de letras reescrita en lenguaje llano.** El menú mezclaba
+  jerga técnica (USLT/SYLT, sidecar, API key, syncedlyrics) y tres
+  conceptos casi homónimos («Sincronizadas», «Nivel sync»,
+  «Auto-alineación»). Ahora se agrupa en «Búsqueda / Dónde se guardan /
+  Sincronización con la música», con la explicación a la derecha de cada
+  valor; los conceptos se renombran (Tipo preferido, Precisión,
+  Auto-corrección) y la opción 14 describe lo que realmente hace
+  (descarta las letras de baja calidad, no solo advierte). Nuevo helper
+  `pad_cols()`: el `printf %-Ns` de Bash cuenta bytes y no caracteres, lo
+  que desalineaba las etiquetas con tildes («Precisión», «corrección»).
+
+### Notas
+
+- **`HTTP Error 403: Forbidden` de YouTube es externo al script.** Lo causa
+  el bloqueo anti-bot de YouTube contra yt-dlp (IP limitada, sin cookies,
+  versión de yt-dlp desactualizada). Mitigaciones desde el propio script:
+  menú 16 (cookies de navegador o archivo `cookies.txt`), menú 18 (proxy),
+  y actualizar yt-dlp (`yt-dlp -U` o el gestor de paquetes). El script ya
+  reintenta errores recuperables automáticamente una vez por descarga.
+
 ## [7.3.4] - 2026-11-13
 
 ### Fixed

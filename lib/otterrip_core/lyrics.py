@@ -628,6 +628,12 @@ def _collect_files(target: str, fmt: str, session: str) -> list[Path]:
 
 # ─── Per-file processing ─────────────────────────────────────────
 
+# Auto-corrección: cada nota distinta se imprime UNA vez por corrida y se
+# resume con conteos al final (evita 86 líneas idénticas en un álbum grande).
+_ALIGN_NOTE_SEEN: set[str] = set()
+_ALIGN_NOTE_COUNTS: dict[str, int] = {}
+
+
 async def _process_file(
     fpath: Path,
     providers: list[BaseProvider],
@@ -643,6 +649,7 @@ async def _process_file(
     embed_style: str = "lrc",
     min_confidence: float = 0.0,
     offset_ms: int = 0,
+    auto_align: bool = False,
 ) -> str:
     """Process a single audio file. Returns 'found', 'already', or 'notfound'."""
     audio = _get_audio_file(str(fpath))
@@ -702,6 +709,29 @@ async def _process_file(
         )
         best.warnings.append(f"confianza {best.confidence:.2f} < mínimo {min_confidence:.2f}")
         return "notfound"
+
+    # --- Auto-align to the real audio (different recording/edition) -----
+    if auto_align and best.has_sync and best.lines:
+        from otterrip_core.align import auto_align_bundle
+
+        applied_ms, align_conf, align_note = auto_align_bundle(
+            best, str(fpath), audio_duration_s=duration
+        )
+        if align_note:
+            if align_note not in _ALIGN_NOTE_SEEN:
+                _ALIGN_NOTE_SEEN.add(align_note)
+                print(f"    · {align_note}")
+            _ALIGN_NOTE_COUNTS[align_note] = (
+                _ALIGN_NOTE_COUNTS.get(align_note, 0) + 1
+            )
+        if applied_ms:
+            print(
+                f"    · Alineación automática: {applied_ms:+d} ms "
+                f"(conf {align_conf:.2f})"
+            )
+            best.warnings.append(
+                f"alineación automática {applied_ms:+d} ms (conf {align_conf:.2f})"
+            )
 
     # Apply offset if requested
     if offset_ms != 0 and best.lines:
@@ -804,6 +834,7 @@ def run_lyrics(args) -> int:
     embed_style = getattr(args, "embed_style", "lrc")
     min_confidence = getattr(args, "min_confidence", 0.0)
     offset_ms = getattr(args, "offset_ms", 0)
+    auto_align = getattr(args, "auto_align", False)
     session = args.session
     summary_file = args.summary
     overwrite = args.overwrite
@@ -850,7 +881,11 @@ def run_lyrics(args) -> int:
             embed_style=embed_style,
             min_confidence=min_confidence,
             offset_ms=offset_ms,
+            auto_align=auto_align,
         )
+
+    _ALIGN_NOTE_SEEN.clear()
+    _ALIGN_NOTE_COUNTS.clear()
 
     results = asyncio.run(
         _process_files_concurrently(
@@ -874,6 +909,14 @@ def run_lyrics(args) -> int:
         print("  Fuentes consultadas:")
         for pname, s in stats.items():
             print(f"    {pname}: {s['queries']} consultas, {s['found']} encontradas")
+
+    if _ALIGN_NOTE_COUNTS:
+        print()
+        print("  Auto-corrección de letras (resumen):")
+        for note, n in sorted(
+            _ALIGN_NOTE_COUNTS.items(), key=lambda kv: (-kv[1], kv[0])
+        ):
+            print(f"    {note}: {n} pista(s)")
 
     print()
 

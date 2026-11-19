@@ -234,15 +234,16 @@ class TestYtDlpOpts:
         with tempfile.TemporaryDirectory() as tmpdir:
             engine = DownloadEngine(dest=tmpdir, format_profile="mp3", quality="320K")
             opts = engine._build_ytdlp_opts()
-            assert opts["x"] is True
-            assert opts["audioformat"] == "mp3"
+            pp = opts["postprocessors"][0]
+            assert pp["key"] == "FFmpegExtractAudio"
+            assert pp["preferredcodec"] == "mp3"
+            assert pp["preferredquality"] == 320
 
     def test_flac_format_opts(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             engine = DownloadEngine(dest=tmpdir, format_profile="flac")
             opts = engine._build_ytdlp_opts()
-            assert opts["x"] is True
-            assert opts["audioformat"] == "flac"
+            assert opts["postprocessors"][0]["preferredcodec"] == "flac"
 
     def test_archive_in_opts(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -267,8 +268,12 @@ class TestYtDlpOpts:
         with tempfile.TemporaryDirectory() as tmpdir:
             engine = DownloadEngine(dest=tmpdir, dur_min=120, dur_max=600)
             opts = engine._build_ytdlp_opts()
-            assert "duration > 120" in opts["match_filter"]
-            assert "duration <= 600" in opts["match_filter"]
+            mf = opts["match_filter"]
+            assert callable(mf)
+            assert mf({"duration": 300}) is None  # in range -> accepted
+            assert mf({"duration": 100}) is not None  # below min -> skipped
+            assert mf({"duration": 700}) is not None  # above max -> skipped
+            assert mf({}) is None  # no duration -> accepted
 
 
 class TestWorkerDownloadWithoutYtDlp:

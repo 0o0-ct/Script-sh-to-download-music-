@@ -149,15 +149,50 @@ class StateDB:
                 created_at REAL NOT NULL
             )
         """)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                name TEXT PRIMARY KEY,
+                applied_at REAL NOT NULL
+            )
+        """)
         self._conn.commit()
 
     # -- legacy migration ----------------------------------------------------
 
     def _migrate_legacy(self) -> None:
-        """Import data from legacy JSON/TSV files and back them up."""
-        self._migrate_queue_json()
-        self._migrate_history_tsv()
-        self._migrate_lyrics_cache_files()
+        """Import data from legacy JSON/TSV files and back them up.
+
+        Idempotent: each migration runs at most once per database.
+        Completion is recorded in ``schema_migrations`` and the legacy
+        files are removed after a successful import, so repeated
+        ``StateDB`` initializations never re-import the same records.
+        """
+        self._run_migration("legacy_queue_json", self._migrate_queue_json)
+        self._run_migration("legacy_history_tsv", self._migrate_history_tsv)
+        self._run_migration("legacy_lyrics_cache_files", self._migrate_lyrics_cache_files)
+
+    def _migration_done(self, name: str) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE name = ?", (name,)
+        ).fetchone()
+        return row is not None
+
+    def _run_migration(self, name: str, fn) -> bool:
+        """Run one legacy migration in a transaction and record it.
+
+        The migration marker is written inside the same transaction as
+        the imported data, so the marker only exists once the import
+        succeeded and a failure rolls back both.
+        """
+        if self._migration_done(name):
+            return False
+        with self._conn:
+            fn()
+            self._conn.execute(
+                "INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)",
+                (name, time.time()),
+            )
+        return True
 
     def _migrate_queue_json(self) -> None:
         qfile = self.state_dir / "queue.json"
@@ -167,9 +202,8 @@ class StateDB:
             data = json.loads(qfile.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return
-        if not isinstance(data, list) or not data:
+        if not isinstance(data, list):
             return
-        count = 0
         for task in data:
             url = task.get("url", "")
             if not url:
@@ -190,14 +224,16 @@ class StateDB:
                     task.get("updated"),
                 ),
             )
-            count += 1
-        if count:
-            bak = qfile.with_suffix(".json.bak")
-            try:
-                shutil.copy2(str(qfile), str(bak))
-            except OSError:
-                pass
-            self._conn.commit()
+        # Back up the original and delete it: the migration marker in
+        # schema_migrations prevents any re-import.
+        try:
+            shutil.copy2(str(qfile), str(qfile.with_suffix(".json.bak")))
+        except OSError:
+            pass
+        try:
+            qfile.unlink()
+        except OSError:
+            pass
 
     def _migrate_history_tsv(self) -> None:
         tsv = Path(os.environ.get("OTTERRIP_DATA_DIR", "")) / "history.tsv"
@@ -207,7 +243,6 @@ class StateDB:
             lines = tsv.read_text(encoding="utf-8").strip().splitlines()
         except OSError:
             return
-        count = 0
         for line in lines:
             parts = line.split("\t")
             if len(parts) < 5:
@@ -219,14 +254,16 @@ class StateDB:
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (ts, url, title, dest, status, duration),
             )
-            count += 1
-        if count:
-            bak = tsv.with_suffix(".tsv.bak")
-            try:
-                shutil.copy2(str(tsv), str(bak))
-            except OSError:
-                pass
-            self._conn.commit()
+        # Back up the original and delete it: the migration marker in
+        # schema_migrations prevents any re-import.
+        try:
+            shutil.copy2(str(tsv), str(tsv.with_suffix(".tsv.bak")))
+        except OSError:
+            pass
+        try:
+            tsv.unlink()
+        except OSError:
+            pass
 
     def _migrate_lyrics_cache_files(self) -> None:
         cache_dir = Path(os.environ.get("OTTERRIP_CACHE_DIR", "")) / "lyrics_cache"
@@ -334,7 +371,7 @@ class StateDB:
         placeholders = ",".join("?" for _ in ids)
         cur = self._conn.execute(
             f"UPDATE queue SET status = 'paused', updated = ? WHERE id IN ({placeholders}) AND status = 'pending'",
-            [time.time()] + ids,
+            [time.time(), *ids],
         )
         self._conn.commit()
         return cur.rowcount
@@ -344,7 +381,7 @@ class StateDB:
         placeholders = ",".join("?" for _ in ids)
         cur = self._conn.execute(
             f"UPDATE queue SET status = 'pending', updated = ? WHERE id IN ({placeholders}) AND status = 'paused'",
-            [time.time()] + ids,
+            [time.time(), *ids],
         )
         self._conn.commit()
         return cur.rowcount
@@ -354,7 +391,7 @@ class StateDB:
         placeholders = ",".join("?" for _ in ids)
         cur = self._conn.execute(
             f"UPDATE queue SET status = 'cancelled', updated = ? WHERE id IN ({placeholders})",
-            [time.time()] + ids,
+            [time.time(), *ids],
         )
         self._conn.commit()
         return cur.rowcount
@@ -365,7 +402,7 @@ class StateDB:
         cur = self._conn.execute(
             f"UPDATE queue SET status = 'pending', error = NULL, updated = ? "
             f"WHERE id IN ({placeholders}) AND status IN ('failed', 'partial', 'cancelled')",
-            [time.time()] + ids,
+            [time.time(), *ids],
         )
         self._conn.commit()
         return cur.rowcount

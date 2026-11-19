@@ -446,5 +446,53 @@ class TestStateDBWAL(unittest.TestCase):
             shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+class TestStateDBMigrationIdempotency(unittest.TestCase):
+    """Repeated StateDB initializations must not re-import legacy data."""
+
+    def test_repeated_init_no_duplicate_imports(self):
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            state_dir.mkdir()
+            data_dir = Path(tmp) / "data"
+            data_dir.mkdir()
+
+            old_env = os.environ.get("OTTERRIP_DATA_DIR")
+            os.environ["OTTERRIP_DATA_DIR"] = str(data_dir)
+            try:
+                (state_dir / "queue.json").write_text(
+                    json.dumps(
+                        [
+                            {"url": "https://example.com/a", "dest": "/m", "status": "pending"},
+                            {"url": "https://example.com/b", "dest": "/m", "status": "running"},
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                (data_dir / "history.tsv").write_text(
+                    "2026-11-18 10:00:00\thttps://example.com/a\tSome Title\t/m\tdone\t30\n",
+                    encoding="utf-8",
+                )
+
+                for _ in range(10):
+                    with state_db.StateDB(str(state_dir)) as db:
+                        pass
+
+                conn = sqlite3.connect(str(state_dir / "state.db"))
+                try:
+                    n_queue = conn.execute("SELECT COUNT(*) FROM queue").fetchone()[0]
+                    n_history = conn.execute("SELECT COUNT(*) FROM history").fetchone()[0]
+                finally:
+                    conn.close()
+                self.assertEqual(n_queue, 2)
+                self.assertEqual(n_history, 1)
+            finally:
+                if old_env is None:
+                    os.environ.pop("OTTERRIP_DATA_DIR", None)
+                else:
+                    os.environ["OTTERRIP_DATA_DIR"] = old_env
+
+
 if __name__ == "__main__":
     unittest.main()

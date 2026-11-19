@@ -76,7 +76,7 @@ jobs:
           go install mvdan.cc/sh/v3/cmd/shfmt@latest
 
       - name: Check shell format
-        run: shfmt -d Down-Linux-music_v7.sh || true
+        run: shfmt -d Down-Linux-music_v7.sh
 
   pester:
     runs-on: windows-latest

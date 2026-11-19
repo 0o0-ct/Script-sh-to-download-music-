@@ -49,7 +49,7 @@ Una vez que tienes el repositorio, ejecuta con Bash 4.4 o superior:
 Cuando el script no encuentre un backend compatible junto a sí mismo, descargará
 el paquete de su versión desde la etiqueta correspondiente de este repositorio.
 Verificará el SHA-256 antes de extraerlo y lo instalará en
-`$XDG_DATA_HOME/otterrip/app/v7.3.0` (o `~/.local/share/otterrip/app/v7.3.0`).
+`$XDG_DATA_HOME/otterrip/app/v8.0.0` (o `~/.local/share/otterrip/app/v8.0.0`).
 El backend y el entorno virtual son por usuario; no se modifican la biblioteca
 musical, la configuración, las sesiones ni los demás datos personales. Si ya hay
 un backend compatible instalado, el inicio no necesita conexión a Internet.
@@ -60,9 +60,9 @@ como `ffmpeg`, pueden requerir el gestor de paquetes de Linux.
 
 ## Backend y versiones
 
-El archivo de distribución `packages/otterrip-backend-v7.3.0.tar.gz` contiene
+El archivo de distribución `packages/otterrip-backend-v8.0.0.tar.gz` contiene
 `lib/` y `requirements.txt`. El script solo acepta el SHA-256 incluido para esa
-versión y obtiene el paquete desde la etiqueta inmutable `v7.3.0`.
+versión y obtiene el paquete desde la etiqueta inmutable `v8.0.0`.
 
 La búsqueda de letras usa LRCLIB y, como respaldo, Musixmatch, NetEase,
 Megalobiz y Genius mediante `syncedlyrics`. Las fuentes Multi-Web buscan letras

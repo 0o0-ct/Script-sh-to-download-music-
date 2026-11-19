@@ -245,7 +245,7 @@ class DownloadEngine:
             "no_warnings": False,
             "progress_hooks": [self._progress_hook],
             "postprocessor_hooks": [self._postprocessor_hook],
-            "match_filter": f"duration > {self.dur_min} & duration <= {self.dur_max}",
+            "match_filter": self._match_filter_duration,
             "extract_flat": False,
         }
 
@@ -255,37 +255,28 @@ class DownloadEngine:
             opts["format"] = "bestaudio/best"
             opts["postprocessors"] = []
         else:
-            opts["postprocessor_args"] = {}
-            if self.format_profile in ("mp3", "m4a", "opus"):
-                opts["x"] = True
-                opts["audioformat"] = self.format_profile if self.format_profile != "opus" else "libopus"
-                if self.quality:
-                    opts["audioquality"] = self.quality
-                    # For postprocessor quality
-                    if self.format_profile == "mp3":
-                        opts.setdefault("postprocessor_args", {})["ffmpeg"] = {"-b:a": self.quality}
-                    elif self.format_profile == "m4a":
-                        opts.setdefault("postprocessor_args", {})["ffmpeg"] = {"-b:a": self.quality}
-                    elif self.format_profile == "opus":
-                        opts.setdefault("postprocessor_args", {})["ffmpeg"] = {
-                            "-codec:a": "libopus",
-                            "-b:a": self.quality,
-                        }
-            elif self.format_profile == "flac":
-                opts["x"] = True
-                opts["audioformat"] = "flac"
-                if self.quality == "24bit":
-                    opts.setdefault("postprocessor_args", {})["ffmpeg"] = {"-sample_fmt": "s24", "-ar": "96000"}
-                else:
-                    opts.setdefault("postprocessor_args", {})["ffmpeg"] = {"-sample_fmt": "s16", "-ar": "44100"}
-            elif self.format_profile == "wav":
-                opts["x"] = True
-                opts["audioformat"] = "wav"
+            # Direct-mode conversion: ``FFmpegExtractAudio`` is the
+            # mechanism that applies in ``YoutubeDL(...)`` — the
+            # ``x``/``audioformat``/``audioquality`` CLI options are
+            # inert in this mode (verified against yt_dlp 2026.10.26).
+            target = {
+                "mp3": "mp3",
+                "m4a": "m4a",
+                "opus": "opus",
+                "flac": "flac",
+                "wav": "wav",
+            }.get(self.format_profile, "mp3")
+            pp_entry: Dict[str, Any] = {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": target,
+            }
+            if self.format_profile in ("mp3", "m4a", "opus") and self.quality:
+                # Bitrate target in k (e.g. "320K" -> 320).
+                pp_entry["preferredquality"] = int(
+                    "".join(ch for ch in str(self.quality) if ch.isdigit())
+                )
 
-            # Default postprocessors
-            pp = []
-            if self.format_profile != "original":
-                pp.append({"key": "FFmpegExtractAudio"})
+            pp: List[Dict[str, Any]] = [pp_entry]
             if self.embed_thumbnail:
                 pp.append({"key": "FFmpegEmbedThumbnail"})
             opts["postprocessors"] = pp
@@ -315,7 +306,9 @@ class DownloadEngine:
 
         # Cookies
         if self.cookies_from_browser:
-            opts["cookiesfrombrowser"] = f"{'{browser}':s}={self.cookies_from_browser}"
+            # yt_dlp expects a tuple (browser, [profile, keyring, container]);
+            # a string makes _parse_browser_specification raise TypeError.
+            opts["cookiesfrombrowser"] = (self.cookies_from_browser,)
         if self.cookies_file:
             opts["cookiefile"] = self.cookies_file
 
@@ -597,6 +590,19 @@ class DownloadEngine:
         )
 
         return result
+
+    def _match_filter_duration(self, info_dict: dict) -> Optional[str]:
+        """yt_dlp ``match_filter`` callable: skip entries outside the duration band.
+
+        Returns a skip reason string (not None) when the entry should be
+        skipped, or None to accept it.
+        """
+        duration = info_dict.get("duration")
+        if duration is None:
+            return None
+        if duration < self.dur_min or duration > self.dur_max:
+            return f"duration outside [{self.dur_min}, {self.dur_max}]s"
+        return None
 
     def cancel(self, entry_ids: List[str]) -> None:
         """Cancel specific downloads by entry ID or URL.

@@ -1,0 +1,1335 @@
+#!/usr/bin/env python3
+"""Lyrics engine — per-file concurrent fallback search and embedding.
+
+This is the core lyrics module invoked by the Bash wrapper via:
+    py_core lyrics <target> <fmt> [options...]
+
+Part 1 (this file): obtención, selección, validación y normalización
+de letras. Produce un :class:`LyricsBundle` por pista.  La escritura de
+tags/archivos (Parte 2) se mantiene sin cambios mediante compatibilidad
+con el formato legacy ``LyricsResult``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+import unicodedata
+from pathlib import Path
+from typing import Awaitable, Callable, Optional
+
+try:
+    import mutagen
+    from mutagen.flac import FLAC
+    from mutagen.id3 import APIC, ID3, SYLT, TXXX, USLT, ID3NoHeaderError
+    from mutagen.mp3 import MP3
+    from mutagen.mp4 import MP4, MP4Cover
+
+    HAS_MUTAGEN = True
+except ImportError:
+    HAS_MUTAGEN = False
+
+from otterrip_core.adapters.base import BaseProvider, SongQuery
+from otterrip_core.adapters.lrclib import LrclibProvider
+from otterrip_core.adapters.multiweb import MultiwebProvider
+from otterrip_core.adapters.syncedlyrics_adapter import (
+    SyncedlyricsProvider,
+    build_syncedlyrics_providers,
+)
+from otterrip_core.lrc_cache import LyricsCache
+from otterrip_core.lyrics_bundle import (
+    LyricsBundle,
+    bundle_from_legacy,
+)
+from otterrip_core.models import LyricsResult
+from otterrip_core.musicbrainz import CanonicalMetadata, lookup_canonical
+from otterrip_core.query_clean import build_query_terms
+
+try:
+    from rapidfuzz import fuzz as _fuzz
+
+    HAS_RAPIDFUZZ = True
+except ImportError:
+    HAS_RAPIDFUZZ = False
+
+
+logger = logging.getLogger("otterrip_core.lyrics")
+
+# ─── Audio helpers ───────────────────────────────────────────────
+
+AUDIO_EXTS = {".mp3", ".flac", ".m4a"}
+
+
+def _get_audio_file(filepath: str):
+    if not HAS_MUTAGEN:
+        return None
+    try:
+        ext = Path(filepath).suffix.lower()
+        if ext == ".mp3":
+            return MP3(filepath)
+        elif ext == ".flac":
+            return FLAC(filepath)
+        elif ext == ".m4a":
+            return MP4(filepath)
+        return mutagen.File(filepath)
+    except Exception:
+        return None
+
+
+def _get_tags(audio) -> dict:
+    tags: dict = {}
+    if audio is None:
+        return tags
+    try:
+        if isinstance(audio, MP3) and audio.tags:
+            tags["title"] = str(audio.tags.get("TIT2", ""))
+            tags["artist"] = str(audio.tags.get("TPE1", ""))
+            tags["album"] = str(audio.tags.get("TALB", ""))
+            tags["track"] = str(audio.tags.get("TRCK", ""))
+            tags["date"] = str(audio.tags.get("TDRC", ""))
+            tags["genre"] = str(audio.tags.get("TCON", ""))
+            tags["isrc"] = str(audio.tags.get("TSRC", ""))
+        elif isinstance(audio, FLAC) and audio.tags:
+            tags["title"] = audio.get("title", [""])[0]
+            tags["artist"] = audio.get("artist", [""])[0]
+            tags["album"] = audio.get("album", [""])[0]
+            tags["track"] = audio.get("tracknumber", [""])[0]
+            tags["date"] = audio.get("date", [""])[0]
+            tags["genre"] = audio.get("genre", [""])[0]
+            tags["isrc"] = audio.get("ISRC", [""])[0]
+        elif isinstance(audio, MP4) and audio.tags:
+            tags["title"] = audio.get("\xa9nam", [""])[0]
+            tags["artist"] = audio.get("\xa9ART", [""])[0]
+            tags["album"] = audio.get("\xa9alb", [""])[0]
+            tags["date"] = audio.get("\xa9day", [""])[0]
+            tags["genre"] = audio.get("\xa9gen", [""])[0]
+    except Exception:
+        pass
+    return tags
+
+
+def _get_duration(audio) -> float | None:
+    if audio is None:
+        return None
+    try:
+        if hasattr(audio, "info") and audio.info:
+            return audio.info.length
+    except Exception:
+        pass
+    return None
+
+
+def _has_lyrics(audio) -> bool:
+    if audio is None:
+        return False
+    try:
+        if isinstance(audio, MP3) and audio.tags:
+            return bool(audio.tags.get("USLT:") or audio.tags.get("SYLT:"))
+        elif isinstance(audio, FLAC) and audio.tags:
+            return bool(audio.get("LYRICS") or audio.get("SYNCEDLYRICS"))
+        elif isinstance(audio, MP4) and audio.tags:
+            return bool(audio.tags.get("\xa9lyr") or audio.tags.get(ITUNES_SYNCED_ATOM))
+    except Exception:
+        pass
+    return False
+
+
+# ─── LRC formatting (legacy — Part 2 keeps this) ─────────────────
+
+
+def _format_lrc(entries: list[tuple[float, str]]) -> str:
+    lines = []
+    for ts, text in entries:
+        mins = int(ts // 60)
+        secs = int(ts % 60)
+        ms = int((ts % 1) * 1000)
+        # 2-digit centiseconds for BlackPlayer/PowerAmp compatibility
+        lines.append(f"[{mins:02d}:{secs:02d}.{ms // 10:02d}] {text}")
+    return "\n".join(lines)
+
+
+# ─── Embedding (legacy — Part 2, untouched) ──────────────────────
+
+ITUNES_SYNCED_ATOM = "----:com.apple.iTunes:LYRICS"
+
+
+def _embed_lyrics(audio, result: LyricsResult, mode: str = "embed") -> bool:
+    """Embed lyrics into an audio file. Returns True on success."""
+    if audio is None:
+        return False
+
+    try:
+        if isinstance(audio, MP3):
+            if audio.tags is None:
+                audio.add_tags()
+            audio.tags.delall("USLT:")
+            audio.tags.delall("SYLT:")
+            # Remove old TXXX:LYRICS if present
+            audio.tags.delall("TXXX:LYRICS")
+
+            if result.has_sync and result.timed_entries:
+                synced_text = [
+                    (text, round(timestamp * 1000)) for timestamp, text in result.timed_entries if text.strip()
+                ]
+                if synced_text:
+                    audio.tags.add(
+                        SYLT(
+                            encoding=3,
+                            lang="eng",
+                            format=2,
+                            type=1,
+                            text=synced_text,
+                        )
+                    )
+                # TXXX:LYRICS with LRC format — PowerAmp reads synced lyrics from here
+                lrc_text = _format_lrc(result.timed_entries)
+                if lrc_text:
+                    audio.tags.add(TXXX(encoding=3, desc="LYRICS", text=lrc_text))
+
+            plain = result.plain_text or "\n".join(t for _, t in result.timed_entries)
+            if plain:
+                audio.tags.add(USLT(encoding=3, lang="eng", text=plain))
+
+        elif isinstance(audio, FLAC):
+            if result.has_sync and result.timed_entries:
+                lrc_text = _format_lrc(result.timed_entries)
+                audio["LYRICS"] = lrc_text.split("\n")
+                audio["SYNCEDLYRICS"] = [lrc_text]
+            else:
+                plain = result.plain_text or "\n".join(t for _, t in result.timed_entries)
+                if plain:
+                    audio["LYRICS"] = plain.split("\n")
+
+        elif isinstance(audio, MP4):
+            if result.has_sync and result.timed_entries:
+                lrc_text = _format_lrc(result.timed_entries)
+                audio["\xa9lyr"] = [lrc_text]
+                audio[ITUNES_SYNCED_ATOM] = [lrc_text.encode("utf-8")]
+            else:
+                plain = result.plain_text or "\n".join(t for _, t in result.timed_entries)
+                if plain:
+                    audio.tags["\xa9lyr"] = [plain]
+
+        audio.save()
+        return True
+    except Exception as exc:
+        logger.error("error al incrustar letras en %s: %s", getattr(audio, "filename", "?"), exc)
+        return False
+
+
+def _write_lrc_file(audio_path: Path, result: LyricsResult) -> Path | None:
+    """Write a .lrc or .txt file alongside the audio."""
+    try:
+        if result.has_sync and result.timed_entries:
+            lrc_path = audio_path.with_suffix(".lrc")
+            lrc_text = _format_lrc(result.timed_entries)
+            lrc_path.write_text(lrc_text, encoding="utf-8")
+            return lrc_path
+        else:
+            txt_path = audio_path.with_suffix(".txt")
+            txt_path.write_text(result.plain_text, encoding="utf-8")
+            return txt_path
+    except Exception:
+        return None
+
+
+# ─── Provider registry ───────────────────────────────────────────
+
+# Canonical provider order by sync quality (best first):
+# 1. Lrclib — best sync, free, no API key
+# 2. Musixmatch — large catalog, good sync
+# 3. NetEase — good for C-pop / Asian music
+# 4. Megalobiz — fallback sync
+# 5. Genius — plain text only
+# 6. Multiweb (legacy aggregate) — kept for backward compatibility
+PROVIDER_ORDER = [
+    "lrclib",
+    "musixmatch",
+    "netease",
+    "megalobiz",
+    "genius",
+    "multiweb",
+]
+
+
+def _build_providers(
+    provider_names: str,
+    host: str = "https://lrclib.net",
+) -> list[BaseProvider]:
+    """Build the provider list from a comma-separated names string.
+
+    Supports individual provider names (lrclib, musixmatch, netease,
+    megalobiz, genius, multiweb) and the special value "all" which
+    enables every available provider in quality order.
+
+    When "multiweb" is specified alongside individual syncedlyrics
+    sources, the individual sources take precedence and multiweb is
+    skipped to avoid duplicate queries.
+    """
+    names = [n.strip().lower() for n in provider_names.split(",") if n.strip()]
+
+    # Special: "all" expands to the canonical order
+    if "all" in names:
+        names = list(PROVIDER_ORDER)
+
+    providers: list[BaseProvider] = []
+    has_lrclib = False
+    has_individual_syncedlyrics = False
+
+    # First pass: collect providers in canonical order
+    for canonical_name in PROVIDER_ORDER:
+        if canonical_name not in names:
+            continue
+
+        if canonical_name == "lrclib":
+            providers.append(LrclibProvider(host=host))
+            has_lrclib = True
+
+        elif canonical_name == "multiweb":
+            # Skip multiweb if individual syncedlyrics sources are already
+            # in the list — avoids duplicate queries to the same backends.
+            if has_individual_syncedlyrics:
+                continue
+            p = MultiwebProvider()
+            if p.is_available():
+                providers.append(p)
+
+        elif canonical_name in ("musixmatch", "netease", "megalobiz", "genius"):
+            p = SyncedlyricsProvider(canonical_name)
+            if p.is_available():
+                providers.append(p)
+                has_individual_syncedlyrics = True
+
+    # If no providers were added at all, fall back to defaults
+    if not providers:
+        # Try lrclib first
+        providers.append(LrclibProvider(host=host))
+        # Then individual syncedlyrics sources
+        providers.extend(build_syncedlyrics_providers())
+
+    return providers
+
+
+# ─── Provider fallback ───────────────────────────────────────────
+
+
+async def _search_one(
+    provider: BaseProvider,
+    query: SongQuery,
+    timeout: float = 10.0,
+) -> list[LyricsBundle]:
+    """Search a single provider with timeout.  Returns LyricsBundle list.
+
+    Logs per-provider metrics: response time and whether synced lyrics were found.
+    """
+    t0 = time.monotonic()
+    try:
+        provider_timeout = timeout
+        # Multiweb tries several sources sequentially; scale timeout.
+        if isinstance(provider, MultiwebProvider):
+            provider_timeout *= len(provider.sources)
+        results = await asyncio.wait_for(provider.search(query), timeout=provider_timeout)
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        has_sync = any(r.has_sync for r in results) if results else False
+        logger.info(
+            "proveedor %s: %d resultado(s), sync=%s, %d ms",
+            provider.name,
+            len(results),
+            has_sync,
+            elapsed_ms,
+        )
+        return results
+    except asyncio.TimeoutError:
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        logger.warning("timeout en proveedor %s (%d ms)", provider.name, elapsed_ms)
+        return []
+    except Exception as exc:
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        logger.warning("error en proveedor %s (%d ms): %s", provider.name, elapsed_ms, exc)
+        return []
+
+
+async def _search_cascade(
+    providers: list[BaseProvider],
+    query: SongQuery,
+    prefer_synced: bool,
+    plain_ok: bool,
+    stats: dict[str, dict] | None = None,
+    timeout: float = 10.0,
+    cache: Optional[LyricsCache] = None,
+    canonical: Optional[CanonicalMetadata] = None,
+) -> Optional[LyricsBundle]:
+    """Try providers in order until one returns a usable LyricsBundle.
+
+    Uses the local cache first; on miss, queries providers and caches the
+    best bundle.
+
+    If the first provider returns only plain (non-synced) lyrics and
+    prefer_synced is True, the remaining providers are still consulted
+    in case they have synced lyrics. The best result across all providers
+    is returned.
+
+    When *canonical* metadata is provided (from MusicBrainz), bundles are
+    scored with fuzzy matching for better accuracy.
+    """
+    # --- Cache lookup --------------------------------------------------
+    if cache is not None:
+        # Try fingerprint-based lookup when ISRC is not available
+        fingerprint = ""
+        if not query.isrc and hasattr(cache, "get_with_fingerprint"):
+            # Compute fingerprint from audio file if path is available
+            audio_path = getattr(query, "audio_path", None)
+            if audio_path:
+                try:
+                    from otterrip_core.audio_fingerprint import compute_fingerprint
+
+                    fp = compute_fingerprint(audio_path)
+                    if fp:
+                        fingerprint = fp
+                except Exception:
+                    pass  # Fingerprint is optional
+
+        if hasattr(cache, "get_with_fingerprint"):
+            cached = cache.get_with_fingerprint(query.artist, query.title, None, query.isrc, fingerprint)
+        else:
+            cached = cache.get(query.artist, query.title, None, query.isrc)
+        if cached is not None:
+            # Re-hydrate bundle from cached dict.
+            bundle = LyricsBundle(
+                kind=cached.get("kind", "none"),
+                lrc=cached.get("lrc"),
+                plain=cached.get("plain"),
+                lines=[(t, x) for t, x in cached.get("lines", [])],
+                source=cached.get("source", ""),
+                audio_duration_ms=cached.get("audio_duration_ms"),
+                ref_duration_ms=cached.get("ref_duration_ms"),
+                offset_ms=cached.get("offset_ms", 0),
+                confidence=cached.get("confidence", 0.0),
+                warnings=cached.get("warnings", []),
+            )
+            if stats is not None:
+                stats[providers[0].name if providers else "cache"]["hits"] = (
+                    stats.get(providers[0].name if providers else "cache", {}).get("hits", 0) + 1
+                )
+            logger.info("caché HIT: %s - %s", query.artist, query.title)
+            return bundle
+
+    best: Optional[LyricsBundle] = None
+
+    for provider in providers:
+        if stats is not None:
+            stats.setdefault(provider.name, {"queries": 0, "found": 0, "errors": 0})
+            stats[provider.name]["queries"] += 1
+        try:
+            results = await _search_one(provider, query, timeout)
+        except Exception as exc:
+            logger.error("proveedor %s falló: %s", provider.name, exc)
+            if stats is not None:
+                stats[provider.name]["errors"] += 1
+            continue
+
+        # Detect input type: LyricsResult (legacy/test) or LyricsBundle (new).
+        from otterrip_core.lyrics_bundle import LyricsBundle as _LB
+        from otterrip_core.models import LyricsResult as _LR
+
+        are_results = all(isinstance(r, _LR) for r in results)
+        are_bundles = all(isinstance(r, _LB) for r in results)
+
+        current_best: Optional[LyricsBundle] = None
+        if are_results:
+            result_bundles = [
+                bundle_from_legacy(
+                    provider=r.provider,
+                    title=r.title,
+                    artist=r.artist,
+                    album=r.album,
+                    duration_s=r.duration,
+                    sync_level=int(r.sync_level),
+                    plain_text=r.plain_text,
+                    timed_entries=r.timed_entries,
+                    confidence=r.confidence,
+                    source=r.provider,
+                    ref_duration_ms=(int(round(r.duration * 1000)) if r.duration else None),
+                )
+                for r in results
+            ]
+            current_best = _select_best_bundle(
+                result_bundles,
+                prefer_synced=prefer_synced,
+                plain_ok=plain_ok,
+                query=query,
+                query_duration_s=query.duration,
+                canonical=canonical,
+            )
+        elif are_bundles:
+            current_best = _select_best_bundle(
+                results,
+                prefer_synced=prefer_synced,
+                plain_ok=plain_ok,
+                query=query,
+                query_duration_s=query.duration,
+                canonical=canonical,
+            )
+
+        if current_best is not None:
+            # If we already have a synced result, skip non-synced from later providers.
+            # If we have plain only and prefer_synced, keep searching for synced.
+            if best is None:
+                best = current_best
+                if stats is not None:
+                    stats[provider.name]["found"] += 1
+            elif prefer_synced and not best.has_sync and current_best.has_sync:
+                # Upgrade: replace plain with synced from this provider
+                if stats is not None:
+                    stats[provider.name]["found"] += 1
+                best = current_best
+            # Otherwise keep the existing best (synced beats plain, higher confidence wins)
+
+    if best is not None:
+        # --- Cache store -------------------------------------------
+        if cache is not None:
+            # Extract bundle fields regardless of type.
+            if isinstance(best, LyricsBundle):
+                cache_payload = {
+                    "kind": best.kind,
+                    "lrc": best.lrc,
+                    "plain": best.plain,
+                    "lines": best.lines,
+                    "source": best.source,
+                    "audio_duration_ms": best.audio_duration_ms,
+                    "ref_duration_ms": best.ref_duration_ms,
+                    "offset_ms": best.offset_ms,
+                    "confidence": best.confidence,
+                    "warnings": best.warnings,
+                }
+            else:
+                # Legacy LyricsResult — synthesize bundle fields.
+                from otterrip_core.lyrics_bundle import bundle_from_legacy
+
+                tmp = bundle_from_legacy(
+                    provider=best.provider,
+                    title=best.title,
+                    artist=best.artist,
+                    album=best.album,
+                    duration_s=best.duration,
+                    sync_level=int(best.sync_level),
+                    plain_text=best.plain_text,
+                    timed_entries=best.timed_entries,
+                    confidence=best.confidence,
+                    source=best.provider,
+                )
+                cache_payload = {
+                    "kind": tmp.kind,
+                    "lrc": tmp.lrc,
+                    "plain": tmp.plain,
+                    "lines": tmp.lines,
+                    "source": tmp.source,
+                    "audio_duration_ms": tmp.audio_duration_ms,
+                    "ref_duration_ms": tmp.ref_duration_ms,
+                    "offset_ms": tmp.offset_ms,
+                    "confidence": tmp.confidence,
+                    "warnings": tmp.warnings,
+                }
+            # Compute fingerprint for cache key when ISRC is not available
+            cache_fingerprint = ""
+            if not query.isrc:
+                audio_path = getattr(query, "audio_path", None)
+                if audio_path:
+                    try:
+                        from otterrip_core.audio_fingerprint import compute_fingerprint
+
+                        fp = compute_fingerprint(audio_path)
+                        if fp:
+                            cache_fingerprint = fp
+                    except Exception:
+                        pass  # Fingerprint is optional
+
+            cache.set(
+                query.artist,
+                query.title,
+                cache_payload,
+                duration_ms=cache_payload["audio_duration_ms"],
+                isrc=query.isrc,
+                fingerprint=cache_fingerprint,
+            )
+        logger.info(
+            "letra encontrada: %s - %s | kind=%s | conf=%.2f | source=%s",
+            query.artist,
+            query.title,
+            getattr(best, "kind", "unknown"),
+            getattr(best, "confidence", 0.0),
+            getattr(best, "source", "?"),
+        )
+        return best
+
+    logger.warning("no se encontraron letras: %s - %s", query.artist, query.title)
+    return None
+
+
+def _normalize_match_text(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", value).casefold()
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch) and ch.isalnum())
+
+
+def _bundle_matches_query(bundle: LyricsBundle, query: SongQuery) -> bool:
+    """Check title/artist compatibility between bundle and query."""
+    if query.isrc and bundle.isrc:
+        return bundle.isrc.casefold() == query.isrc.casefold()
+    for actual, expected in (
+        (bundle.title, query.title),
+        (bundle.artist, query.artist),
+    ):
+        if actual and expected:
+            if _normalize_match_text(actual) != _normalize_match_text(expected):
+                return False
+    return True
+
+
+# Version suffixes that should penalize a bundle when the canonical title
+# does NOT contain them.  These indicate a different recording variant.
+_VERSION_SUFFIXES_PENALIZE = [
+    "live",
+    "acoustic",
+    "remix",
+    "cover",
+    "piano",
+    "guitar",
+    "orchestral",
+    "karaoke",
+    "instrumental",
+    "a cappella",
+    "acapella",
+    "medley",
+    "unplugged",
+    "radio edit",
+    "extended",
+    "dj mix",
+    "club mix",
+]
+
+# Suffixes that are harmless YouTube noise — they don't indicate a different
+# recording, just metadata about the video.  These are ignored by the
+# version-suffix penalty.
+_HARMLESS_SUFFIXES = [
+    "official video",
+    "official audio",
+    "lyric video",
+    "official music video",
+    "4k",
+    "hd",
+    "hq",
+    "4k audio",
+    "visualizer",
+    "audio oficial",
+    "video oficial",
+]
+
+
+def _version_suffix_penalty(bundle_title: str, canonical_title: str) -> float:
+    """Return a penalty factor (0.0–1.0) for unprompted version suffixes.
+
+    If the bundle title contains a version suffix (e.g. "Live", "Remix",
+    "Acoustic") that is NOT present in the canonical title, the factor
+    drops below 1.0 to penalize the score.  Harmless suffixes like
+    "Official Video" or "[4K]" are ignored.
+
+    Returns 1.0 when no penalty applies.
+    """
+    if not bundle_title or not canonical_title:
+        return 1.0
+
+    # For suffix matching we need a normalized form that keeps spaces
+    # so multi-word suffixes like "a cappella", "radio edit", "dj mix"
+    # can still be detected.  _normalize_match_text strips spaces, so
+    # we use a simpler normalization here.
+    def _normalize_for_suffix(text: str) -> str:
+        decomposed = unicodedata.normalize("NFKD", text).casefold()
+        return "".join(ch for ch in decomposed if not unicodedata.combining(ch) and (ch.isalnum() or ch == " "))
+
+    bt_lower = _normalize_for_suffix(bundle_title)
+    ct_lower = _normalize_for_suffix(canonical_title)
+
+    # Skip harmless suffixes from the penalty check — strip them first
+    bt_stripped = bt_lower
+    for harmless in _HARMLESS_SUFFIXES:
+        bt_stripped = bt_stripped.replace(harmless, "")
+    # Also strip common bracket/parenthesis noise
+    bt_stripped = bt_stripped.strip(" []()")
+
+    penalty = 1.0
+    for suffix in _VERSION_SUFFIXES_PENALIZE:
+        # Check if the suffix appears in the bundle title but NOT in canonical
+        if suffix in bt_stripped and suffix not in ct_lower:
+            penalty *= 0.7  # 30% penalty per unprompted suffix
+
+    return penalty
+
+
+def _score_bundle(
+    bundle: LyricsBundle,
+    canonical_title: str,
+    canonical_artist: str,
+    canonical_duration: Optional[float] = None,
+) -> float:
+    """Score a LyricsBundle against canonical metadata.
+
+    Returns a value in [0.0, 1.0] where 1.0 is the best match.
+
+    Scoring weights:
+        - Title similarity: 40%
+        - Artist similarity: 30%
+        - Duration match: 20%
+        - Sync level: 10%
+        - Version suffix penalty: multiplicative (0.7 per unprompted suffix)
+    """
+    if not canonical_title and not canonical_artist:
+        return bundle.confidence
+
+    # Title similarity (40%)
+    if HAS_RAPIDFUZZ and canonical_title and bundle.title:
+        title_score = (
+            _fuzz.ratio(
+                _normalize_match_text(canonical_title),
+                _normalize_match_text(bundle.title),
+            )
+            / 100.0
+        )
+    elif canonical_title and bundle.title:
+        # Fallback: exact normalized match
+        title_score = 1.0 if _normalize_match_text(canonical_title) == _normalize_match_text(bundle.title) else 0.0
+    else:
+        title_score = 0.5
+
+    # Artist similarity (30%)
+    if HAS_RAPIDFUZZ and canonical_artist and bundle.artist:
+        artist_score = (
+            _fuzz.ratio(
+                _normalize_match_text(canonical_artist),
+                _normalize_match_text(bundle.artist),
+            )
+            / 100.0
+        )
+    elif canonical_artist and bundle.artist:
+        artist_score = 1.0 if _normalize_match_text(canonical_artist) == _normalize_match_text(bundle.artist) else 0.0
+    else:
+        artist_score = 0.5
+
+    # Duration match (20%)
+    if canonical_duration is not None and bundle.ref_duration_ms is not None:
+        ref_dur_s = bundle.ref_duration_ms / 1000.0
+        dur_diff = abs(canonical_duration - ref_dur_s)
+        # Score drops linearly: 0s diff = 1.0, 30s+ diff = 0.0
+        duration_score = max(0.0, 1.0 - (dur_diff / 30.0))
+    elif canonical_duration is not None and bundle.audio_duration_ms is not None:
+        audio_dur_s = bundle.audio_duration_ms / 1000.0
+        dur_diff = abs(canonical_duration - audio_dur_s)
+        duration_score = max(0.0, 1.0 - (dur_diff / 30.0))
+    else:
+        duration_score = 0.5
+
+    # Sync level (10%)
+    sync_map = {"word": 1.0, "line": 0.7, "plain": 0.3, "instrumental": 0.0, "none": 0.0}
+    sync_score = sync_map.get(bundle.kind, 0.0)
+
+    # Version suffix penalty — penalize bundles that have unprompted
+    # version markers (Live, Remix, Acoustic, Cover, etc.)
+    version_penalty = _version_suffix_penalty(bundle.title, canonical_title)
+
+    combined = title_score * 0.40 + artist_score * 0.30 + duration_score * 0.20 + sync_score * 0.10
+    combined *= version_penalty
+    return round(combined, 4)
+
+
+def _select_best_bundle(
+    bundles: list[LyricsBundle],
+    prefer_synced: bool = True,
+    plain_ok: bool = False,
+    query: Optional[SongQuery] = None,
+    query_duration_s: Optional[float] = None,
+    canonical: Optional[CanonicalMetadata] = None,
+) -> Optional[LyricsBundle]:
+    """Select the best LyricsBundle from a provider's results.
+
+    Rule: any synced (line/word) beats any plain.  Never degrade.
+
+    When *canonical* metadata is provided (from MusicBrainz), bundles are
+    scored with fuzzy matching so that covers, live versions and mismatched
+    recordings are ranked lower.
+    """
+    if not bundles:
+        return None
+
+    candidates = [
+        b
+        for b in bundles
+        if b.confidence >= 0.3
+        and _bundle_has_lyrics(b)
+        and (not prefer_synced or plain_ok or b.has_sync)
+        and (query is None or _bundle_matches_query(b, query))
+    ]
+    if not candidates:
+        return None
+
+    # Use fuzzy scoring when canonical metadata is available
+    if canonical and (canonical.title or canonical.artist):
+        scored: list[tuple[float, LyricsBundle]] = []
+        for b in candidates:
+            s = _score_bundle(
+                b,
+                canonical.title,
+                canonical.artist,
+                canonical.duration,
+            )
+            scored.append((s, b))
+
+        # Sort by score descending, then by sync preference
+        def sort_key(item: tuple[float, LyricsBundle]) -> tuple:
+            s, b = item
+            sync_boost = 0.15 if (b.has_sync and prefer_synced) else 0.0
+            return (s + sync_boost, s, b.confidence)
+
+        scored.sort(key=sort_key, reverse=True)
+        best_score, best_bundle = scored[0]
+
+        logger.info(
+            "scoring winner: %s - %s | score=%.3f | kind=%s | source=%s | dur_delta=%s",
+            best_bundle.artist,
+            best_bundle.title,
+            best_score,
+            best_bundle.kind,
+            best_bundle.source,
+            best_bundle.duration_delta_ms(),
+        )
+        return best_bundle
+
+    def sort_key(b: LyricsBundle) -> tuple:
+        sync_score = 1 if (b.has_sync and prefer_synced) else 0
+        dur_delta = b.duration_delta_ms() or 10_000_000
+        return (
+            sync_score,
+            -dur_delta,
+            b.confidence,
+            len(b.lines) if b.has_sync else len(b.plain or ""),
+        )
+
+    candidates.sort(key=sort_key, reverse=True)
+    return candidates[0]
+
+
+def select_best(
+    results: list[LyricsResult],
+    query: SongQuery,
+    prefer_synced: bool = True,
+    plain_ok: bool = False,
+) -> Optional[LyricsResult]:
+    """Backward-compatible wrapper: selects best legacy LyricsResult.
+
+    Converts LyricsResult objects to LyricsBundle, selects the best,
+    and returns the original LyricsResult wrapper for the caller.
+    """
+
+    if not results:
+        return None
+
+    bundles = [
+        bundle_from_legacy(
+            provider=r.provider,
+            title=r.title,
+            artist=r.artist,
+            album=r.album,
+            duration_s=r.duration,
+            sync_level=int(r.sync_level),
+            plain_text=r.plain_text,
+            timed_entries=r.timed_entries,
+            confidence=r.confidence,
+            source=r.provider,
+            ref_duration_ms=(int(round(r.duration * 1000)) if r.duration else None),
+        )
+        for r in results
+    ]
+    best = _select_best_bundle(
+        bundles,
+        prefer_synced=prefer_synced,
+        plain_ok=plain_ok,
+        query=query,
+        query_duration_s=query.duration,
+    )
+    if best is None:
+        return None
+    # Return the matching original LyricsResult (identity preserved).
+    best_provider = best.provider if best.source else ""
+    best_title = best.title
+    best_artist = best.artist
+    for r in results:
+        if r.provider == best_provider and r.title == best_title and r.artist == best_artist:
+            return r
+    return results[0]
+
+
+def _bundle_has_lyrics(bundle: LyricsBundle) -> bool:
+    if bundle.has_sync:
+        return any(text.strip() for _, text in bundle.lines)
+    return bool(bundle.plain and bundle.plain.strip())
+
+
+# ─── File collection ─────────────────────────────────────────────
+
+
+def _read_session(session_path: str) -> list[str]:
+    files = []
+    p = Path(session_path)
+    if not p.is_file():
+        return files
+    try:
+        for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                info = json.loads(line)
+                files.append(info.get("file", ""))
+            except json.JSONDecodeError:
+                files.append(line)
+    except OSError:
+        pass
+    return files
+
+
+def _collect_files(target: str, fmt: str, session: str) -> list[Path]:
+    files: list[Path] = []
+    ext = f".{fmt}"
+
+    if session:
+        for fpath in _read_session(session):
+            p = Path(fpath)
+            if p.is_file():
+                files.append(p)
+        return sorted(set(files))
+
+    target_path = Path(target)
+    if target_path.is_file():
+        files.append(target_path)
+    elif target_path.is_dir():
+        for child in target_path.rglob(f"*{ext}"):
+            files.append(child)
+        for ext2 in AUDIO_EXTS:
+            if ext2 != ext:
+                for child in target_path.rglob(f"*{ext2}"):
+                    if child not in files:
+                        files.append(child)
+
+    return sorted(set(files))
+
+
+# ─── Per-file processing ─────────────────────────────────────────
+
+# Auto-corrección: cada nota distinta se imprime UNA vez por corrida y se
+# resume con conteos al final (evita 86 líneas idénticas en un álbum grande).
+_ALIGN_NOTE_SEEN: set[str] = set()
+_ALIGN_NOTE_COUNTS: dict[str, int] = {}
+
+
+async def _process_file(
+    fpath: Path,
+    providers: list[BaseProvider],
+    lang: str,
+    prefer_synced: bool,
+    upgrade_plain: bool,
+    overwrite: bool,
+    mode: str,
+    stats: dict[str, dict],
+    cache: Optional[LyricsCache] = None,
+    sync_level: str = "line",
+    sidecar: bool = False,
+    embed_style: str = "lrc",
+    min_confidence: float = 0.0,
+    offset_ms: int = 0,
+    auto_align: bool = False,
+    force_align: bool = False,
+) -> str:
+    """Process a single audio file. Returns 'found', 'already', or 'notfound'."""
+    audio = _get_audio_file(str(fpath))
+    if audio is None:
+        return "notfound"
+
+    tags = _get_tags(audio)
+    duration = _get_duration(audio)
+
+    has_lyr = _has_lyrics(audio)
+    if has_lyr and not overwrite and not upgrade_plain:
+        print(f"  ✔ {fpath.name} — ya tiene letras")
+        return "already"
+
+    title = tags.get("title", fpath.stem)
+    artist = tags.get("artist", "")
+    album = tags.get("album", "")
+    isrc = tags.get("isrc", "")
+
+    if not title or not artist:
+        print(f"  ⚠ {fpath.name} — metadatos incompletos, saltando")
+        return "notfound"
+
+    # --- Clean query terms (Phase 1: limpieza de consulta) ------------
+    # Pass filename so that suspicious metadata (e.g. playlist names as
+    # artist) can fall back to parsing the filename for real metadata.
+    terms = build_query_terms(title, artist, album, filename=fpath.name)
+    clean_t = terms["title"]
+    clean_a = terms["artist"]
+    clean_alb = terms["album"]
+
+    # --- Phase 1b: MusicBrainz canonical metadata lookup --------------
+    canonical: Optional[CanonicalMetadata] = None
+    try:
+        canonical = await lookup_canonical(clean_t, clean_a, clean_alb, timeout=5.0)
+        if canonical:
+            # Use canonical metadata to refine the query
+            if canonical.title:
+                clean_t = canonical.title
+            if canonical.artist:
+                clean_a = canonical.artist
+            if canonical.album:
+                clean_alb = canonical.album
+            if canonical.duration and not duration:
+                duration = canonical.duration
+            if canonical.isrc and not isrc:
+                isrc = canonical.isrc
+    except Exception as exc:
+        logger.debug("MusicBrainz lookup failed: %s", exc)
+
+    query = SongQuery(
+        title=clean_t,
+        artist=clean_a,
+        album=clean_alb,
+        duration=duration,
+        isrc=isrc,
+        language=lang,
+        prefer_synced=prefer_synced,
+        audio_path=str(fpath),
+    )
+
+    best = await _search_cascade(
+        providers,
+        query,
+        prefer_synced=prefer_synced,
+        plain_ok=(not prefer_synced) or upgrade_plain,
+        stats=stats,
+        timeout=10.0,
+        cache=cache,
+        canonical=canonical,
+    )
+    if best is None:
+        print(f"  ✘ {fpath.name} — no se encontraron letras")
+        return "notfound"
+
+    # Confidence gate: skip if below threshold
+    if min_confidence > 0 and best.confidence < min_confidence:
+        print(f"  ⚠ {fpath.name} — confianza {best.confidence:.2f} < {min_confidence:.2f}, omitida")
+        best.warnings.append(f"confianza {best.confidence:.2f} < mínimo {min_confidence:.2f}")
+        return "notfound"
+
+    # --- Auto-align to the real audio (different recording/edition) -----
+    auto_align_applied = False
+    if auto_align and best.has_sync and best.lines:
+        from otterrip_core.align import auto_align_bundle
+
+        applied_ms, align_conf, align_note = auto_align_bundle(best, str(fpath), audio_duration_s=duration)
+        if align_note:
+            if align_note not in _ALIGN_NOTE_SEEN:
+                _ALIGN_NOTE_SEEN.add(align_note)
+                print(f"    · {align_note}")
+            _ALIGN_NOTE_COUNTS[align_note] = _ALIGN_NOTE_COUNTS.get(align_note, 0) + 1
+        if applied_ms:
+            auto_align_applied = True
+            print(f"    · Alineación automática: {applied_ms:+d} ms (conf {align_conf:.2f})")
+
+        # --- Global offset detection (fallback if cross-correlation
+        #     didn't find a significant shift) -------------------------
+        if not auto_align_applied:
+            from otterrip_core.aligner import (
+                apply_global_offset_to_bundle as detect_and_apply_global_offset,
+            )
+
+            global_offset_ms, global_note = detect_and_apply_global_offset(best, str(fpath))
+            if global_offset_ms:
+                auto_align_applied = True
+                print(f"    · Offset global detectado: {global_offset_ms:+d} ms")
+                best.warnings.append(f"offset global automático: {global_note}")
+            elif global_note and global_note not in _ALIGN_NOTE_SEEN:
+                _ALIGN_NOTE_SEEN.add(global_note)
+                _ALIGN_NOTE_COUNTS[global_note] = _ALIGN_NOTE_COUNTS.get(global_note, 0) + 1
+
+    # --- Forced line-by-line alignment to audio onsets -----------------
+    if force_align and best.has_sync and best.lines:
+        from otterrip_core.aligner import align_bundle as forced_align_bundle
+
+        align_report = forced_align_bundle(best, str(fpath), offset_ms=offset_ms)
+        if align_report.note:
+            if align_report.lines_moved > 0:
+                print(f"    · Alineación forzada: {align_report.note}")
+                best.warnings.append(f"alineación forzada: {align_report.note}")
+            else:
+                if align_report.note not in _ALIGN_NOTE_SEEN:
+                    _ALIGN_NOTE_SEEN.add(align_report.note)
+                    print(f"    · {align_report.note}")
+                _ALIGN_NOTE_COUNTS[align_report.note] = _ALIGN_NOTE_COUNTS.get(align_report.note, 0) + 1
+
+    # --- Word-level alignment (sync_level="word") -----------------------
+    if sync_level == "word" and best.lrc and best.lines:
+        from otterrip_core.enhanced_lrc import (
+            align_words_in_place,
+            parse_enhanced_lrc,
+            serialize_enhanced_lrc,
+        )
+
+        elrc = parse_enhanced_lrc(best.lrc)
+        word_notes, word_report = align_words_in_place(elrc, str(fpath))
+        for note in word_notes:
+            print(f"    · {note}")
+        if word_report and word_report.lines_done:
+            best.lrc = serialize_enhanced_lrc(elrc)
+            best.lines = [
+                (el.line_ms, el.raw_text or " ".join(w.text for w in el.words))
+                for el in elrc.lines
+            ]
+            best.kind = "word"
+
+    # Apply stored offset override (from interactive adjustment)
+    try:
+        from otterrip_core.lyrics_overrides import OverridesStore
+
+        override_store = OverridesStore()
+        stored_offset = override_store.get_offset(str(fpath))
+        if stored_offset != 0 and best.lines:
+            best.lines = [(max(0, ms + stored_offset), txt) for ms, txt in best.lines]
+            best.lines.sort(key=lambda x: x[0])
+            best.offset_ms += stored_offset
+            if best.lrc:
+                from otterrip_core.lrc_validator import shift_lrc
+
+                best.lrc = shift_lrc(best.lrc, stored_offset)
+            print(f"    · Offset guardado aplicado: {stored_offset:+d} ms")
+    except Exception:
+        pass  # Overrides are optional
+
+    # Apply manual offset if requested (skip if auto-align or force_align
+    # already applied an offset)
+    if offset_ms != 0 and best.lines and not force_align and not auto_align_applied:
+        best.lines = [(max(0, ms + offset_ms), txt) for ms, txt in best.lines]
+        best.lines.sort(key=lambda x: x[0])
+        best.offset_ms += offset_ms
+        if best.lrc:
+            from otterrip_core.lrc_validator import shift_lrc
+
+            best.lrc = shift_lrc(best.lrc, offset_ms)
+
+    # Log decision.
+    print(f"  ✔ {fpath.name} — letra {best.kind} (conf={best.confidence:.2f}, origen={best.source})")
+    if best.warnings:
+        for w in best.warnings:
+            print(f"    ⚠ {w}")
+
+    # Convert to legacy LyricsResult for Part 2 embedding/writing.
+    legacy = best.to_legacy_result(provider=best.source.split(" | ")[0] if best.source else "unknown")
+    # Override fields from bundle for accuracy.
+    legacy["title"] = clean_t
+    legacy["artist"] = clean_a
+    legacy["album"] = clean_alb
+
+    # Build a lightweight LyricsResult-like object for legacy functions.
+    class _LegacyResult:
+        def __init__(self, d):
+            self.__dict__.update(d)
+
+    result = _LegacyResult(legacy)
+
+    if mode == "embed":
+        if _embed_lyrics(audio, result, mode):
+            # Sidecar .lrc: always generate when sidecar=True or when synced
+            should_write_sidecar = sidecar or (best.has_sync and best.lines)
+            if should_write_sidecar:
+                lrc_path = fpath.with_suffix(".lrc")
+                try:
+                    # Build headers for sidecar compatibility (Poweramp, foobar2000, VLC)
+                    header_lines: list[str] = []
+                    if best.title or clean_t:
+                        header_lines.append(f"[ti:{clean_t or best.title}]")
+                    if best.artist or clean_a:
+                        header_lines.append(f"[ar:{clean_a or best.artist}]")
+                    if best.album or clean_alb:
+                        header_lines.append(f"[al:{clean_alb or best.album}]")
+                    if duration:
+                        mm = int(duration) // 60
+                        ss = int(duration) % 60
+                        header_lines.append(f"[length:{mm:02d}:{ss:02d}]")
+                    header_lines.append("[ve:OtterRip]")
+                    header_text = "\n".join(header_lines) + "\n" if header_lines else ""
+
+                    if best.has_sync and best.lines:
+                        lrc_entries = [(ms / 1000.0, txt) for ms, txt in best.lines]
+                        lrc_content = header_text + _format_lrc(lrc_entries)
+                    else:
+                        # Plain lyrics sidecar (no timestamps)
+                        lrc_content = best.plain or "\n".join(t for _, t in best.lines) if best.lines else ""
+                        if lrc_content and header_text:
+                            lrc_content = header_text + lrc_content
+                    if lrc_content:
+                        lrc_path.write_text(lrc_content, encoding="utf-8")
+                    # Enhanced LRC sidecar for word-level
+                    if best.kind == "word" and sidecar:
+                        elrc_path = fpath.with_suffix(".elrc")
+                        if best.lrc:
+                            elrc_path.write_text(best.lrc, encoding="utf-8")
+                    print(f"  ✔ {fpath.name} — letra {best.kind} + {lrc_path.name}")
+                except Exception:
+                    print(f"  ✔ {fpath.name} — letra {best.kind}")
+            else:
+                print(f"  ✔ {fpath.name} — letra {best.kind}")
+        else:
+            print(f"  ⚠ {fpath.name} — error al incrustar")
+            return "notfound"
+    else:
+        out = _write_lrc_file(fpath, result)
+        if out:
+            print(f"  ✔ {fpath.name} — {out.name}")
+        else:
+            print(f"  ⚠ {fpath.name} — error al escribir archivo")
+            return "notfound"
+
+    return "found"
+
+
+def _write_summary(path: str, found: int, notfound: int, already: int) -> None:
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            f"found={found}\nnotfound={notfound}\nalready={already}\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+# ─── Main entry point ────────────────────────────────────────────
+
+
+def run_lyrics(args) -> int:
+    """Main lyrics command handler."""
+    target = args.target
+    fmt = args.fmt
+    host = args.host
+    mode = args.mode
+    providers_str = args.providers
+    lang = args.lang
+    prefer_synced = not args.plain_ok
+    upgrade_plain = args.upgrade_plain
+    sync_level = getattr(args, "sync_level", "line")
+    sidecar = getattr(args, "sidecar", False)
+    embed_style = getattr(args, "embed_style", "lrc")
+    min_confidence = getattr(args, "min_confidence", 0.0)
+    offset_ms = getattr(args, "offset_ms", 0)
+    auto_align = getattr(args, "auto_align", False)
+    session = args.session
+    summary_file = args.summary
+    overwrite = args.overwrite
+
+    # Build providers
+    providers = _build_providers(providers_str, host=host)
+    if not providers:
+        print("  No hay proveedores disponibles.")
+        if summary_file:
+            _write_summary(summary_file, 0, 0, 0)
+        return 0
+
+    # Collect files
+    files = _collect_files(target, fmt, session)
+    if not files:
+        print("  No se encontraron archivos.")
+        if summary_file:
+            _write_summary(summary_file, 0, 0, 0)
+        return 0
+
+    stats: dict[str, dict] = {}
+    for provider in providers:
+        stats[provider.name] = {"queries": 0, "found": 0, "errors": 0}
+
+    # Local cache (artist + title + duration).
+    cache_dir = getattr(args, "cache_dir", "") or str(Path.home() / ".cache" / "otterrip" / "lyrics")
+    cache = LyricsCache(cache_dir)
+
+    async def process_file(fpath: Path) -> str:
+        return await _process_file(
+            fpath,
+            providers,
+            lang,
+            prefer_synced,
+            upgrade_plain,
+            overwrite,
+            mode,
+            stats,
+            cache=cache,
+            sync_level=sync_level,
+            sidecar=sidecar,
+            embed_style=embed_style,
+            min_confidence=min_confidence,
+            offset_ms=offset_ms,
+            auto_align=auto_align,
+        )
+
+    _ALIGN_NOTE_SEEN.clear()
+    _ALIGN_NOTE_COUNTS.clear()
+
+    results = asyncio.run(
+        _process_files_concurrently(
+            files,
+            process_file,
+            jobs=getattr(args, "jobs", 3),
+        )
+    )
+    found = results.count("found")
+    already = results.count("already")
+    notfound = len(results) - found - already
+
+    print()
+    print("  ── Letras procesadas ──")
+    print(f"  Encontradas:     {found}")
+    print(f"  No encontradas:  {notfound}")
+    print(f"  Ya existentes:   {already}")
+
+    if stats:
+        print()
+        print("  Fuentes consultadas:")
+        for pname, s in stats.items():
+            print(f"    {pname}: {s['queries']} consultas, {s['found']} encontradas")
+
+    if _ALIGN_NOTE_COUNTS:
+        print()
+        print("  Auto-corrección de letras (resumen):")
+        for note, n in sorted(_ALIGN_NOTE_COUNTS.items(), key=lambda kv: (-kv[1], kv[0])):
+            print(f"    {note}: {n} pista(s)")
+
+    print()
+
+    if summary_file:
+        _write_summary(summary_file, found, notfound, already)
+
+    return 0
+
+
+# ─── Concurrent file processing (kept from original) ─────────────
+
+
+async def _process_files_concurrently(
+    files: list[Path],
+    processor: Callable[[Path], Awaitable[str]],
+    jobs: int,
+) -> list[str]:
+    semaphore = asyncio.Semaphore(max(1, jobs))
+
+    async def process_one(path: Path) -> str:
+        async with semaphore:
+            return await processor(path)
+
+    return await asyncio.gather(*(process_one(path) for path in files))

@@ -253,7 +253,7 @@ def _decode_audio_ffmpeg(path: str) -> Optional["object"]:  # noqa: F821
 
 def _nearest_onset(
     ms: int,
-    onsets_ms: list[int],
+    onsets_ms: Sequence[int],
     window_ms: int,
 ) -> Optional[int]:
     """Find the onset closest to *ms* within ±*window_ms*.

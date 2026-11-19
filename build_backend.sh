@@ -43,7 +43,6 @@ echo "Updating REQUIRED_FILES..."
     if [[ -d "$CORE_DIR/adapters" ]]; then
         find "$CORE_DIR/adapters" -maxdepth 1 -name '*.py' -printf 'adapters/%f\n' | sort
     fi
-    echo "VERSION"
 } > "$REQUIRED_FILES"
 
 echo "REQUIRED_FILES updated with $(wc -l < "$REQUIRED_FILES") files."
@@ -56,7 +55,7 @@ TAR_NAME="otterrip-backend-v${VERSION}.tar.gz"
 TAR_PATH="$PACKAGES_DIR/$TAR_NAME"
 
 echo "Creating $TAR_NAME..."
-tar -czf "$TAR_PATH" -C "$CORE_DIR" $(cat "$REQUIRED_FILES")
+tar -czf "$TAR_PATH" --exclude='__pycache__' -C "$SCRIPT_DIR" lib requirements.txt
 
 # Calculate SHA-256
 SHA256=$(sha256sum "$TAR_PATH" | awk '{print $1}')

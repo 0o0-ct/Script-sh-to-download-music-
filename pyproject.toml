@@ -5,7 +5,20 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "otterrip-core"
 version = "8.0.0"
-dependencies = ["mutagen", "yt-dlp", "typer", "rich"]
+dependencies = [
+    "mutagen",
+    "yt-dlp",
+    "typer",
+    "rich",
+    "aiohttp",
+    "requests",
+    "syncedlyrics>=1.0.1,<2",
+    "rapidfuzz>=3.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["lib"]
+include = ["otterrip_core*"]
 
 [project.optional-dependencies]
 chromaprint = ["pyacoustid"]

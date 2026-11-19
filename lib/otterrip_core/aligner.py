@@ -14,11 +14,12 @@ timestamp already sits near an onset are left unchanged.
 librosa is an OPTIONAL dependency (requirements-align.txt).  Without it
 the aligner returns the original lines untouched.
 """
+
 from __future__ import annotations
 
 import logging
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Sequence
 
 from otterrip_core.lrc_validator import normalise_lrc, parse_lrc
@@ -27,11 +28,11 @@ logger = logging.getLogger("otterrip_core.aligner")
 
 # ── Tunable constants ──────────────────────────────────────────────
 
-SNAP_WINDOW_MS = 250          # only snap within ±250 ms of an onset
-MIN_ONSETS = 4                # need enough onsets to trust the alignment
-MIN_LINES = 4                 # skip alignment for trivially short lyrics
-MAX_SHIFT_PER_LINE_MS = 500   # never move a single line more than this
-SR = 22050                    # sample rate for decoding (good enough for onsets)
+SNAP_WINDOW_MS = 250  # only snap within ±250 ms of an onset
+MIN_ONSETS = 4  # need enough onsets to trust the alignment
+MIN_LINES = 4  # skip alignment for trivially short lyrics
+MAX_SHIFT_PER_LINE_MS = 500  # never move a single line more than this
+SR = 22050  # sample rate for decoding (good enough for onsets)
 
 
 @dataclass
@@ -62,8 +63,8 @@ NOTE_NO_OFFSET = "sin offset global detectable"
 NOTE_OFFSET_APPLIED = "offset global detectado y aplicado"
 
 # ── Global offset detection constants ──────────────────────────────
-MIN_GLOBAL_OFFSET_MS = 500    # minimum offset to consider (ms)
-MIN_CONSISTENT_LINES = 3      # minimum lines to confirm consistency
+MIN_GLOBAL_OFFSET_MS = 500  # minimum offset to consider (ms)
+MIN_CONSISTENT_LINES = 3  # minimum lines to confirm consistency
 MAX_CONSISTENCY_DEVIATION_MS = 300  # max deviation between line offsets
 
 
@@ -98,8 +99,7 @@ def align_lrc_to_audio(
     """
     # ── Check librosa availability ─────────────────────────────────
     try:
-        import librosa  # type: ignore
-        import numpy as np  # type: ignore
+        pass  # type: ignore
     except Exception:
         report = AlignReport(
             total_lines=len(lines),
@@ -157,10 +157,7 @@ def align_lrc_to_audio(
     )
 
     if lines_moved > 0:
-        report.note = (
-            f"{lines_moved}/{len(lines)} líneas ajustadas "
-            f"(max {max_shift} ms, media {mean_shift:.0f} ms)"
-        )
+        report.note = f"{lines_moved}/{len(lines)} líneas ajustadas (max {max_shift} ms, media {mean_shift:.0f} ms)"
 
     # ── Apply global offset after snapping ─────────────────────────
     final = _apply_offset(aligned, offset_ms)
@@ -217,10 +214,23 @@ def _detect_onsets(audio_path: str) -> Optional[list[int]]:
 def _decode_audio_ffmpeg(path: str) -> Optional["object"]:  # noqa: F821
     """Decode any audio format to mono float32 via ffmpeg pipe."""
     cmd = [
-        "ffmpeg", "-v", "error", "-i", path,
-        "-vn", "-map_metadata", "-1",
-        "-f", "f32le", "-acodec", "pcm_f32le",
-        "-ac", "1", "-ar", str(SR), "pipe:1",
+        "ffmpeg",
+        "-v",
+        "error",
+        "-i",
+        path,
+        "-vn",
+        "-map_metadata",
+        "-1",
+        "-f",
+        "f32le",
+        "-acodec",
+        "pcm_f32le",
+        "-ac",
+        "1",
+        "-ar",
+        str(SR),
+        "pipe:1",
     ]
     try:
         import numpy as np  # type: ignore
@@ -352,7 +362,8 @@ def detect_global_offset(
         # Offsets are too inconsistent — not a global shift
         logger.debug(
             "global offset inconsistent: median %d ms, max deviation %d ms",
-            median_offset, max_dev,
+            median_offset,
+            max_dev,
         )
         return 0, NOTE_NO_OFFSET
 
@@ -365,7 +376,9 @@ def detect_global_offset(
     note = f"{NOTE_OFFSET_APPLIED}: {offset_ms:+d} ms"
     logger.info(
         "%s (based on %d lines, max deviation %d ms)",
-        note, len(per_line_offsets), max_dev,
+        note,
+        len(per_line_offsets),
+        max_dev,
     )
     return offset_ms, note
 
@@ -443,7 +456,8 @@ def align_lrc_string(
         return lrc_text, AlignReport(note="sin líneas con timestamp")
 
     aligned_lines, report = align_lrc_to_audio(
-        lines, audio_path,
+        lines,
+        audio_path,
         offset_ms=offset_ms,
         snap_window_ms=snap_window_ms,
         max_shift_ms=max_shift_ms,
@@ -478,7 +492,8 @@ def align_bundle(
         return AlignReport(note="sin letras sincronizadas")
 
     aligned_lines, report = align_lrc_to_audio(
-        bundle.lines, audio_path,
+        bundle.lines,
+        audio_path,
         offset_ms=offset_ms,
         snap_window_ms=snap_window_ms,
         max_shift_ms=max_shift_ms,
@@ -491,3 +506,120 @@ def align_bundle(
         bundle.warnings.append(f"alineación forzada: {report.note}")
 
     return report
+
+
+# ── Word-level alignment (Enhanced LRC engine) ────────────────────
+
+
+@dataclass
+class WordTiming:
+    """One word with its start/end time in milliseconds."""
+
+    text: str
+    start_ms: int
+    end_ms: int
+
+
+@dataclass
+class WordAlignReport:
+    """Summary of a word-level alignment pass.
+
+    Attributes:
+        lines_done: Number of lines that received word timings.
+        total_words: Total words timed across all lines.
+        note: Human-readable summary (empty on success).
+    """
+
+    lines_done: int = 0
+    total_words: int = 0
+    note: str = ""
+
+
+#: Minimum span of a word with no successor (ms).
+MIN_WORD_DUR_MS = 150
+#: Extra duration assigned to the last word of a line (ms).
+LAST_WORD_DUR_MS = 240
+
+WORD_NOTE_APPLIED = "alineación palabra-por-palabra: {lines} líneas sincronizadas"
+WORD_NOTE_NO_WORDS = "líneas sin palabras: alineación omitida"
+
+
+def align_words_to_audio(
+    lines: Sequence[tuple[int, Sequence[str]]],
+    audio_path: str,
+    *,
+    min_onsets: int = MIN_ONSETS,
+    snap_window_ms: int = SNAP_WINDOW_MS,
+    min_word_dur_ms: int = MIN_WORD_DUR_MS,
+) -> tuple[list[tuple[int, list[WordTiming]]], WordAlignReport]:
+    """Snap the word starts of each timed line to real audio onsets.
+
+    Word ``i`` starts at the nearest onset within ``snap_window_ms``
+    of the predicted position (``line_ms`` for the first word, then
+    previous start + ``min_word_dur_ms``).  The last word of a line
+    ends ``LAST_WORD_DUR_MS`` after its start; other words end when
+    the next starts.  Lines without words are passed through.
+
+    Args:
+        lines: List of ``(line_ms, words)`` where ``words`` is the
+            sequence of word texts for that line.
+        audio_path: Audio file on disk.
+        min_onsets: Minimum onsets required to proceed.
+        snap_window_ms: Maximum distance to an onset for a snap.
+        min_word_dur_ms: Minimum spacing between consecutive word starts.
+
+    Returns:
+        ``(aligned, report)`` with one ``(line_ms, [WordTiming...])``
+        entry per non-empty line, in input order.
+    """
+    report = WordAlignReport()
+    if not lines:
+        report.note = WORD_NOTE_NO_WORDS
+        return [], report
+
+    onsets = _detect_onsets(audio_path)
+    if not onsets or len(onsets) < min_onsets:
+        report.note = NOTE_TOO_FEW if onsets is not None else NOTE_AUDIO_FAIL
+        return [], report
+
+    out: list[tuple[int, list[WordTiming]]] = []
+    for line_ms, words in lines:
+        texts = [str(w).strip() for w in words if str(w).strip()]
+        if not texts:
+            continue
+        timings = _align_words_line(line_ms, texts, onsets, snap_window_ms, min_word_dur_ms)
+        report.lines_done += 1
+        report.total_words += len(timings)
+        out.append((line_ms, timings))
+
+    report.note = WORD_NOTE_APPLIED.format(lines=report.lines_done) if report.lines_done else WORD_NOTE_NO_WORDS
+    return out, report
+
+
+def _align_words_line(
+    line_ms: int,
+    words: Sequence[str],
+    onsets: Sequence[int],
+    snap_window_ms: int,
+    min_word_dur_ms: int,
+) -> list[WordTiming]:
+    """Compute start/end ms for the words of a single line."""
+    starts: list[int] = []
+    cursor = max(0, line_ms)
+    for text in words:
+        cand = _nearest_onset(cursor, onsets, snap_window_ms)
+        if cand is None or cand < cursor:
+            cand = cursor
+        starts.append(cand)
+        cursor = cand + min_word_dur_ms
+
+    timings: list[WordTiming] = []
+    for i, start_ms in enumerate(starts):
+        if i + 1 < len(starts):
+            end_ms = starts[i + 1]
+        else:
+            end_ms = start_ms + LAST_WORD_DUR_MS
+        if end_ms <= start_ms:
+            end_ms = start_ms + min_word_dur_ms
+        timings.append(WordTiming(text=words[i], start_ms=start_ms, end_ms=end_ms))
+    return timings

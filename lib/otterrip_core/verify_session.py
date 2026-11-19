@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Verify downloaded audio files (verify-session command)."""
+
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 try:
     import mutagen
-    from mutagen.mp3 import MP3
     from mutagen.flac import FLAC
+    from mutagen.mp3 import MP3
     from mutagen.mp4 import MP4
+
     HAS_MUTAGEN = True
 except ImportError:
     HAS_MUTAGEN = False

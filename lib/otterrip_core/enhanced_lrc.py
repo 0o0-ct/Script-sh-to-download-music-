@@ -13,17 +13,19 @@ Pure module — no network, no heavy dependencies.  The optional
 alignment engine (stable-ts / WhisperX) lives in a separate module
 that imports this one.
 """
+
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
 
-
 # ── Data model ─────────────────────────────────────────────────────
+
 
 @dataclass
 class WordSpan:
     """One word with its time span."""
+
     text: str
     start_ms: int
     end_ms: int = 0
@@ -32,14 +34,16 @@ class WordSpan:
 @dataclass
 class EnhancedLine:
     """One Enhanced LRC line."""
-    line_ms: int          # line-level timestamp
+
+    line_ms: int  # line-level timestamp
     words: list[WordSpan] = field(default_factory=list)
-    raw_text: str = ""    # fallback plain text
+    raw_text: str = ""  # fallback plain text
 
 
 @dataclass
 class EnhancedLrc:
     """Parsed Enhanced LRC document."""
+
     lines: list[EnhancedLine] = field(default_factory=list)
     headers: dict[str, str] = field(default_factory=dict)
     plain_text: str = ""
@@ -81,6 +85,7 @@ def _format_word_ts_ms(ms: int) -> str:
 
 # ── Parser ─────────────────────────────────────────────────────────
 
+
 def parse_enhanced_lrc(text: str) -> EnhancedLrc:
     """Parse Enhanced LRC text into structured data.
 
@@ -118,7 +123,7 @@ def parse_enhanced_lrc(text: str) -> EnhancedLrc:
         )
 
         # Text after line timestamp
-        after_ts = line[line_match.end():].strip()
+        after_ts = line[line_match.end() :].strip()
 
         # Check for word-level timestamps
         word_matches = list(_WORD_TS_RE.finditer(after_ts))
@@ -132,7 +137,7 @@ def parse_enhanced_lrc(text: str) -> EnhancedLrc:
             pos = 0
             for wm in word_matches:
                 # Text before this word timestamp
-                before = after_ts[pos:wm.start()].strip()
+                before = after_ts[pos : wm.start()].strip()
                 if before:
                     text_parts.append(before)
 
@@ -143,14 +148,14 @@ def parse_enhanced_lrc(text: str) -> EnhancedLrc:
                 )
 
                 # Find the word text after the timestamp
-                rest = after_ts[wm.end():]
+                rest = after_ts[wm.end() :]
                 # Skip optional closing bracket content
                 word_text = ""
                 if rest:
                     # Word ends at next timestamp or end of string
                     next_ts = _WORD_TS_RE.search(rest)
                     if next_ts:
-                        word_text = rest[:next_ts.start()].strip()
+                        word_text = rest[: next_ts.start()].strip()
                     else:
                         word_text = rest.strip()
 
@@ -158,11 +163,13 @@ def parse_enhanced_lrc(text: str) -> EnhancedLrc:
                 word_text = re.sub(r"[<>]", "", word_text).strip()
 
                 if word_text:
-                    words.append(WordSpan(
-                        text=word_text,
-                        start_ms=w_start,
-                        end_ms=0,  # will be computed
-                    ))
+                    words.append(
+                        WordSpan(
+                            text=word_text,
+                            start_ms=w_start,
+                            end_ms=0,  # will be computed
+                        )
+                    )
                     text_parts.append(word_text)
 
                 pos = wm.end()
@@ -204,6 +211,7 @@ def parse_enhanced_lrc(text: str) -> EnhancedLrc:
 
 # ── Serializer ─────────────────────────────────────────────────────
 
+
 def serialize_enhanced_lrc(elrc: EnhancedLrc) -> str:
     """Serialize EnhancedLrc back to text format.
 
@@ -212,10 +220,9 @@ def serialize_enhanced_lrc(elrc: EnhancedLrc) -> str:
     """
     out_lines: list[str] = []
 
-    # Headers
-    for key in ("ti", "ar", "al", "au", "by", "ve"):
-        if key in elrc.headers:
-            out_lines.append(f"[{key}:{elrc.headers[key]}]")
+    # Headers (all parsed headers, in original order)
+    for key, value in elrc.headers.items():
+        out_lines.append(f"[{key}:{value}]")
 
     for el in elrc.lines:
         if el.words:
@@ -233,6 +240,7 @@ def serialize_enhanced_lrc(elrc: EnhancedLrc) -> str:
 
 
 # ── Conversion helpers ─────────────────────────────────────────────
+
 
 def standard_lrc_to_enhanced(lrc_text: str) -> EnhancedLrc:
     """Convert standard LRC to EnhancedLrc (word timestamps = 0).
@@ -254,17 +262,20 @@ def standard_lrc_to_enhanced(lrc_text: str) -> EnhancedLrc:
         m = line_ts_re.match(line)
         if m:
             line_ms = _ms_from_parts(
-                int(m.group(1)), int(m.group(2)), m.group(3),
+                int(m.group(1)),
+                int(m.group(2)),
+                m.group(3),
             )
             text = m.group(4).strip()
             # Split into words (no timestamps yet)
-            words = [WordSpan(text=w, start_ms=line_ms, end_ms=0)
-                     for w in text.split() if w]
-            elrc.lines.append(EnhancedLine(
-                line_ms=line_ms,
-                words=words,
-                raw_text=text,
-            ))
+            words = [WordSpan(text=w, start_ms=line_ms, end_ms=0) for w in text.split() if w]
+            elrc.lines.append(
+                EnhancedLine(
+                    line_ms=line_ms,
+                    words=words,
+                    raw_text=text,
+                )
+            )
 
     elrc.plain_text = "\n".join(el.raw_text for el in elrc.lines if el.raw_text)
     return elrc
@@ -284,6 +295,7 @@ def enhanced_to_standard_lrc(elrc: EnhancedLrc) -> str:
 
 # ── Validation ─────────────────────────────────────────────────────
 
+
 def validate_enhanced(elrc: EnhancedLrc, tolerance_ms: int = 500) -> list[str]:
     """Validate word timestamps against line timestamps.
 
@@ -299,33 +311,27 @@ def validate_enhanced(elrc: EnhancedLrc, tolerance_ms: int = 500) -> list[str]:
         last_ms = -1
         for j, w in enumerate(el.words):
             if w.start_ms < last_ms:
-                warnings.append(
-                    f"line {i+1}, word {j+1}: timestamp not monotonic "
-                    f"({w.start_ms}ms < {last_ms}ms)"
-                )
+                warnings.append(f"line {i + 1}, word {j + 1}: timestamp not monotonic ({w.start_ms}ms < {last_ms}ms)")
                 w.start_ms = last_ms
             last_ms = w.start_ms
 
             # Check word is within line ± tolerance
             if abs(w.start_ms - el.line_ms) > tolerance_ms and j == 0:
                 warnings.append(
-                    f"line {i+1}: first word {w.start_ms}ms far from "
-                    f"line {el.line_ms}ms (tolerance {tolerance_ms}ms)"
+                    f"line {i + 1}: first word {w.start_ms}ms far from line {el.line_ms}ms (tolerance {tolerance_ms}ms)"
                 )
 
         # Check line-level monotonicity
         if i > 0:
             prev = elrc.lines[i - 1]
             if el.line_ms < prev.line_ms:
-                warnings.append(
-                    f"line {i+1}: line timestamp {el.line_ms}ms < "
-                    f"previous {prev.line_ms}ms"
-                )
+                warnings.append(f"line {i + 1}: line timestamp {el.line_ms}ms < previous {prev.line_ms}ms")
 
     return warnings
 
 
 # ── Alignment stub ─────────────────────────────────────────────────
+
 
 def align_words_stub(elrc: EnhancedLrc, audio_path: str) -> EnhancedLrc | None:
     """Attempt word-level alignment using stable-ts.
@@ -369,3 +375,59 @@ def align_words_stub(elrc: EnhancedLrc, audio_path: str) -> EnhancedLrc | None:
             pass
 
     return elrc
+
+
+# ── Word-level alignment pass (librosa onsets) ──────────────────────
+
+
+def align_words_in_place(elrc: EnhancedLrc, audio_path: str):
+    """Align word timestamps of ``elrc`` in place using audio onsets.
+
+    Lines whose text has no words yet get word timings from
+    :func:`otterrip_core.aligner.align_words_to_audio`; lines that
+    already have word timestamps get their starts re-aligned.
+
+    Returns ``(notes, report)``: ``notes`` is a list of strings for
+    logs/prints and ``report`` is the ``WordAlignReport`` from the
+    aligner (``None`` when it could not run).
+    """
+    from otterrip_core.aligner import WORD_NOTE_NO_WORDS, align_words_to_audio
+
+    lines_in: list[tuple[int, tuple[str, ...]]] = []
+    for el in elrc.lines:
+        texts = [w.text for w in el.words] or el.raw_text.split()
+        if texts:
+            lines_in.append((el.line_ms, tuple(texts)))
+
+    if not lines_in:
+        return [WORD_NOTE_NO_WORDS], None
+
+    results, report = align_words_to_audio(lines_in, audio_path)
+
+    notes = [report.note] if report.note else []
+    if not results:
+        return notes, report
+
+    idx = 0
+    for el in elrc.lines:
+        if idx >= len(results):
+            break
+        texts = [w.text for w in el.words] or el.raw_text.split()
+        if not texts:
+            continue
+        line_ms, timings = results[idx]
+        idx += 1
+        el.line_ms = line_ms
+        for w, t in zip(el.words, timings):
+            w.start_ms = t.start_ms
+            w.end_ms = t.end_ms
+        for t in timings[len(el.words):]:
+            el.words.append(WordSpan(text=t.text, start_ms=t.start_ms, end_ms=t.end_ms))
+        if el.words:
+            el.raw_text = el.raw_text or " ".join(w.text for w in el.words)
+
+    if report.lines_done:
+        warnings = validate_enhanced(elrc)
+        if warnings:
+            notes.append(f"validación ELRC: {len(warnings)} advertencia(s)")
+    return notes, report

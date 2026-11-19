@@ -13,22 +13,19 @@ Usage:
     py_core dashboard
     otterrip dashboard
 """
+
 from __future__ import annotations
 
-import asyncio
-import json
-import sys
 from datetime import datetime
-from pathlib import Path
-from typing import Optional
 
 try:
-    from textual.app import App, ComposeResult
-    from textual.widgets import Header, Footer, DataTable, Static, Tabs, TabPanel
-    from textual.containers import Container
-    from textual.screen import Screen
     from textual import events
+    from textual.app import App, ComposeResult
+    from textual.containers import Container
     from textual.reactive import reactive
+    from textual.screen import Screen
+    from textual.widgets import DataTable, Footer, Header, Static, TabPanel, Tabs
+
     HAS_TEXTUAL = True
 except ImportError:
     HAS_TEXTUAL = False
@@ -37,22 +34,26 @@ from . import rich_output as ro
 
 # ── Data fetchers ────────────────────────────────────────────────────
 
+
 def _get_queue_data() -> tuple[list[dict], dict]:
     """Fetch queue data from StateDB."""
     tasks = []
     stats = {}
     try:
         from .state_db import StateDB
+
         db = StateDB()
         rows = db.queue_list()
         for row in rows:
-            tasks.append({
-                "id": row.get("id", "?"),
-                "url": row.get("url", "")[:60],
-                "status": row.get("status", "unknown"),
-                "progress": row.get("progress", 0),
-                "error": row.get("error", "")[:40],
-            })
+            tasks.append(
+                {
+                    "id": row.get("id", "?"),
+                    "url": row.get("url", "")[:60],
+                    "status": row.get("status", "unknown"),
+                    "progress": row.get("progress", 0),
+                    "error": row.get("error", "")[:40],
+                }
+            )
         stats = db.queue_stats()
     except Exception:
         pass
@@ -64,6 +65,7 @@ def _get_library_data() -> list[dict]:
     files = []
     try:
         from .library import LibraryScanner
+
         scanner = LibraryScanner()
         files = scanner.scan()
     except Exception:
@@ -76,15 +78,18 @@ def _get_history_data(limit: int = 20) -> list[dict]:
     entries = []
     try:
         from .state_db import StateDB
+
         db = StateDB()
         rows = db.history_list(limit=limit)
         for row in rows:
-            entries.append({
-                "title": row.get("title", "?"),
-                "artist": row.get("artist", ""),
-                "status": row.get("status", ""),
-                "time": row.get("timestamp", ""),
-            })
+            entries.append(
+                {
+                    "title": row.get("title", "?"),
+                    "artist": row.get("artist", ""),
+                    "status": row.get("status", ""),
+                    "time": row.get("timestamp", ""),
+                }
+            )
     except Exception:
         pass
     return entries
@@ -219,7 +224,6 @@ if HAS_TEXTUAL:
 
             self.update("\n".join(lines))
 
-
     class DashboardApp(App):
         """Main dashboard application with tabs for Downloads, Queue, Library."""
 
@@ -312,9 +316,9 @@ else:
 
                 # Header
                 now = datetime.now().strftime("%H:%M:%S")
-                print(f"  ╔══════════════════════════════════════════╗")
+                print("  ╔══════════════════════════════════════════╗")
                 print(f"  ║  OtterRip Dashboard  [{now}]              ║")
-                print(f"  ╚══════════════════════════════════════════╝\n")
+                print("  ╚══════════════════════════════════════════╝\n")
 
                 # Queue
                 tasks, stats = _get_queue_data()
@@ -349,6 +353,7 @@ else:
 
                 try:
                     import time
+
                     time.sleep(self.refresh_interval)
                 except KeyboardInterrupt:
                     break

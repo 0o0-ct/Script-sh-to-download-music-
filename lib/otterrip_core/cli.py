@@ -9,16 +9,18 @@ Usage:
     python -m otterrip_core.cli
     otterrip  (if installed)
 """
+
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 from typing import Optional
 
 try:
-    import typer
     from typing import Annotated
+
+    import typer
+
     HAS_TYPER = True
 except ImportError:
     HAS_TYPER = False
@@ -42,6 +44,7 @@ else:
 
 # ── Autocompletion helpers ───────────────────────────────────────────
 
+
 def _complete_urls(incomplete: str) -> list[str]:
     """Complete URLs from history."""
     # Could read from state_db history for autocompletion
@@ -49,6 +52,7 @@ def _complete_urls(incomplete: str) -> list[str]:
 
 
 # ── Download commands ────────────────────────────────────────────────
+
 
 @app.command("download")
 def download(
@@ -66,15 +70,25 @@ def download(
     Downloads audio from YouTube, applies the specified audio profile,
     optionally fetches lyrics and fixes metadata using MusicBrainz.
     """
-    _run_py_core("download", "engine", url,
-                 dest=dest, workers=workers, profile=profile,
-                 normalize=normalize, lyrics=lyrics, metadata=metadata,
-                 json_output=json)
+    _run_py_core(
+        "download",
+        "engine",
+        url,
+        dest=dest,
+        workers=workers,
+        profile=profile,
+        normalize=normalize,
+        lyrics=lyrics,
+        metadata=metadata,
+        json_output=json,
+    )
 
 
 @app.command("queue")
 def queue(
-    action: Annotated[str, typer.Argument(help="Queue action: add, list, claim, finish, pause, resume, cancel, retry, clear-done")],
+    action: Annotated[
+        str, typer.Argument(help="Queue action: add, list, claim, finish, pause, resume, cancel, retry, clear-done")
+    ],
     ids: Annotated[Optional[list[str]], typer.Argument(help="Task IDs or 'all'")] = None,
     url: Annotated[Optional[str], typer.Option("--url", "-u", help="URL(s) for 'add' action")] = None,
     summary: Annotated[Optional[str], typer.Option("--summary", "-s", help="Summary for 'finish' action")] = None,
@@ -129,6 +143,7 @@ def library(
 
 # ── Playlist commands ────────────────────────────────────────────────
 
+
 @app.command("playlist")
 def playlist(
     action: Annotated[str, typer.Argument(help="Playlist action: export, sync, list")],
@@ -152,6 +167,7 @@ def playlist(
 
 
 # ── Organize commands ────────────────────────────────────────────────
+
 
 @app.command("organize")
 def organize(
@@ -177,6 +193,7 @@ def organize(
 
 
 # ── Subscriptions commands ───────────────────────────────────────────
+
 
 @app.command("subscriptions")
 def subscriptions(
@@ -204,6 +221,7 @@ def subscriptions(
 
 
 # ── Metadata commands ────────────────────────────────────────────────
+
 
 @app.command("fingerprint")
 def fingerprint(
@@ -265,6 +283,7 @@ def mb_lookup(
 
 # ── Normalize command ────────────────────────────────────────────────
 
+
 @app.command("normalize")
 def normalize_cmd(
     audio_file: Annotated[str, typer.Argument(help="Audio file to normalize")],
@@ -281,6 +300,7 @@ def normalize_cmd(
 
 
 # ── Post-process command ─────────────────────────────────────────────
+
 
 @app.command("post-process")
 def post_process(
@@ -309,6 +329,7 @@ def post_process(
 
 # ── Dashboard command ────────────────────────────────────────────────
 
+
 @app.command("dashboard")
 def dashboard(
     refresh: Annotated[int, typer.Option("--refresh", "-r", help="Refresh interval (seconds)")] = 5,
@@ -320,6 +341,7 @@ def dashboard(
     """
     try:
         from .dashboard import DashboardApp
+
         app_instance = DashboardApp(refresh_interval=refresh)
         app_instance.run()
     except ImportError:
@@ -328,6 +350,7 @@ def dashboard(
 
 
 # ── Doctor command ───────────────────────────────────────────────────
+
 
 @app.command("doctor")
 def doctor(
@@ -344,6 +367,7 @@ def doctor(
 
 # ── Yt-dlp management ────────────────────────────────────────────────
 
+
 @app.command("ytdlp")
 def ytdlp_cmd(
     action: Annotated[str, typer.Argument(help="Action: version, update-check, update, rollback")],
@@ -357,6 +381,7 @@ def ytdlp_cmd(
 
 
 # ── State DB command ─────────────────────────────────────────────────
+
 
 @app.command("state-db")
 def state_db(
@@ -379,6 +404,7 @@ def state_db(
 
 # ── Version command ──────────────────────────────────────────────────
 
+
 @app.command("version")
 def version():
     """Show OtterRip version."""
@@ -386,6 +412,7 @@ def version():
 
 
 # ── Helper: run py_core subcommand ───────────────────────────────────
+
 
 def _run_py_core(*args: str, **kwargs: str) -> int:
     """Dispatch to the argparse-based __main__.py handler.
@@ -412,6 +439,7 @@ def _run_py_core(*args: str, **kwargs: str) -> int:
     # Import and call the main handler directly
     try:
         from . import __main__ as main_mod
+
         # Parse and dispatch
         sys.argv = ["otterrip"] + cmd_args
         main_mod.main()
@@ -424,6 +452,7 @@ def _run_py_core(*args: str, **kwargs: str) -> int:
 
 
 # ── Entry point ──────────────────────────────────────────────────────
+
 
 def main():
     """Entry point for the Typer CLI."""

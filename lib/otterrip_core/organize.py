@@ -6,6 +6,7 @@ Reorganize audio files using customizable templates like:
 
 Supports dry-run mode to preview changes before applying.
 """
+
 from __future__ import annotations
 
 import os
@@ -13,13 +14,13 @@ import re
 import shutil
 import sys
 from pathlib import Path
-from typing import Optional
 
 try:
     import mutagen
-    from mutagen.mp3 import MP3
     from mutagen.flac import FLAC
+    from mutagen.mp3 import MP3
     from mutagen.mp4 import MP4
+
     HAS_MUTAGEN = True
 except ImportError:
     HAS_MUTAGEN = False
@@ -172,10 +173,7 @@ class Organizer:
             print(f"Directorio no encontrado: {source_dir}", file=sys.stderr)
             return {"moved": [], "skipped": [], "errors": []}
 
-        files = sorted(
-            f for f in source.rglob("*")
-            if f.is_file() and f.suffix.lower() in AUDIO_EXTS
-        )
+        files = sorted(f for f in source.rglob("*") if f.is_file() and f.suffix.lower() in AUDIO_EXTS)
 
         moved = []
         skipped = []
@@ -204,28 +202,34 @@ class Organizer:
 
                 # Skip if already in correct location
                 if filepath.resolve() == dest.resolve():
-                    skipped.append({
-                        "file": str(filepath),
-                        "reason": "already_in_place",
-                    })
+                    skipped.append(
+                        {
+                            "file": str(filepath),
+                            "reason": "already_in_place",
+                        }
+                    )
                     continue
 
                 # Create parent directory
                 dest.parent.mkdir(parents=True, exist_ok=True)
 
                 if dry_run:
-                    moved.append({
-                        "from": str(filepath),
-                        "to": str(dest),
-                        "dry_run": True,
-                    })
+                    moved.append(
+                        {
+                            "from": str(filepath),
+                            "to": str(dest),
+                            "dry_run": True,
+                        }
+                    )
                 else:
                     shutil.move(str(filepath), str(dest))
-                    moved.append({
-                        "from": str(filepath),
-                        "to": str(dest),
-                        "dry_run": False,
-                    })
+                    moved.append(
+                        {
+                            "from": str(filepath),
+                            "to": str(dest),
+                            "dry_run": False,
+                        }
+                    )
 
                     # Clean up empty parent directories
                     parent = filepath.parent
@@ -240,10 +244,12 @@ class Organizer:
                             break
 
             except Exception as exc:
-                errors.append({
-                    "file": str(filepath),
-                    "error": str(exc),
-                })
+                errors.append(
+                    {
+                        "file": str(filepath),
+                        "error": str(exc),
+                    }
+                )
 
         return {
             "moved": moved,

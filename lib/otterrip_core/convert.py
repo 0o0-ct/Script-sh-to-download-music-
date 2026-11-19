@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Audio converter (convert command)."""
+
 from __future__ import annotations
 
 import shutil
@@ -22,13 +23,17 @@ EXT_TO_CONTAINER = {
 def _build_ffmpeg_cmd(src: Path, dst: Path, quality: str) -> list[str]:
     ext = dst.suffix.lower()
     cmd = [
-        "ffmpeg", "-y", "-i", str(src),
-        "-map_metadata", "0",
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(src),
+        "-map_metadata",
+        "0",
     ]
 
     if ext == ".mp3":
         if quality.startswith("k") or quality.isdigit():
-            cmd.extend(["-codec:a", f"libmp3lame", "-b:a", quality])
+            cmd.extend(["-codec:a", "libmp3lame", "-b:a", quality])
         elif quality == "max":
             cmd.extend(["-codec:a", "libmp3lame", "-b:a", "320k"])
         elif quality == "high":
@@ -99,10 +104,7 @@ def run_copy(source: Path, dest: Path) -> int:
     if source.is_file():
         files = [source]
     elif source.is_dir():
-        files = sorted(
-            f for f in source.rglob("*")
-            if f.is_file() and f.suffix.lower() in AUDIO_EXTS
-        )
+        files = sorted(f for f in source.rglob("*") if f.is_file() and f.suffix.lower() in AUDIO_EXTS)
     else:
         print(f"Ruta no encontrada: {source}")
         return 1
@@ -119,9 +121,16 @@ def run_copy(source: Path, dest: Path) -> int:
             continue
         try:
             cmd = [
-                "ffmpeg", "-y", "-i", str(fpath),
-                "-map_metadata", "0", "-map", "0",
-                "-codec", "copy",
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(fpath),
+                "-map_metadata",
+                "0",
+                "-map",
+                "0",
+                "-codec",
+                "copy",
                 str(out_path),
             ]
             subprocess.run(cmd, check=True, capture_output=True, timeout=300)
@@ -156,10 +165,7 @@ def run_convert(args) -> int:
     if source.is_file():
         files = [source]
     elif source.is_dir():
-        files = sorted(
-            f for f in source.rglob("*")
-            if f.is_file() and f.suffix.lower() in AUDIO_EXTS
-        )
+        files = sorted(f for f in source.rglob("*") if f.is_file() and f.suffix.lower() in AUDIO_EXTS)
     else:
         print(f"Ruta no encontrada: {args.source}")
         return 1

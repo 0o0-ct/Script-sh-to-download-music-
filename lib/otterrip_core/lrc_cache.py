@@ -11,11 +11,11 @@ different versions of the same song.  When neither ISRC nor fingerprint
 are available, the key falls back to (artist, title, duration) for
 backward compatibility.
 """
+
 from __future__ import annotations
 
 import hashlib
 import os
-import time
 from pathlib import Path
 from typing import Optional
 

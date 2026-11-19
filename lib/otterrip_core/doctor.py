@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """System diagnostics (doctor command)."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -15,9 +16,9 @@ def _check(binary: str, min_version: str | None = None) -> tuple[bool, str]:
         return False, f"  ! {binary} no encontrado"
     ver = ""
     try:
-        out = subprocess.check_output(
-            [path, "--version"], stderr=subprocess.STDOUT, timeout=10
-        ).decode(errors="replace")
+        out = subprocess.check_output([path, "--version"], stderr=subprocess.STDOUT, timeout=10).decode(
+            errors="replace"
+        )
         ver = out.strip().split("\n")[0]
     except Exception:
         ver = "(desconocido)"
@@ -57,6 +58,7 @@ def run_doctor(args) -> int:
     if has_mutagen:
         try:
             import mutagen
+
             print(f"  ✔ mutagen {mutagen.version_string}")
         except Exception:
             print("  ✔ mutagen (instalado)")
@@ -69,6 +71,7 @@ def run_doctor(args) -> int:
     if has_requests:
         try:
             import requests
+
             print(f"  ✔ requests {requests.__version__}")
         except Exception:
             print("  ✔ requests (instalado)")
@@ -81,6 +84,7 @@ def run_doctor(args) -> int:
     if has_aiohttp:
         try:
             import aiohttp
+
             print(f"  ✔ aiohttp {aiohttp.__version__}")
         except Exception:
             print("  ✔ aiohttp (instalado)")
@@ -100,7 +104,7 @@ def run_doctor(args) -> int:
     if dest:
         d = Path(dest)
         if d.exists():
-            if d.is_dir() and d.is_writable() if hasattr(d, 'is_writable') else d.is_dir():
+            if d.is_dir() and d.is_writable() if hasattr(d, "is_writable") else d.is_dir():
                 print(f"  ✔ Destino: {dest}")
             else:
                 print(f"  ! Destino no escribible: {dest}")
@@ -110,6 +114,7 @@ def run_doctor(args) -> int:
     # Network check
     try:
         import requests as req
+
         req.get("https://lrclib.net", timeout=5)
         print("  ✔ Red: conexión a lrclib.net OK")
     except Exception:

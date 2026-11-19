@@ -12,6 +12,7 @@ Usage:
     py_core normalize <target> [--mode replaygain|loudnorm] \
         [--target-lufs -16] [--true-peak -1.5]
 """
+
 from __future__ import annotations
 
 import json
@@ -40,16 +41,14 @@ def _find_audio_files(target: Path) -> list[Path]:
             return [target]
         return []
     if target.is_dir():
-        return sorted(
-            f for f in target.rglob("*")
-            if f.is_file() and f.suffix.lower() in AUDIO_EXTS
-        )
+        return sorted(f for f in target.rglob("*") if f.is_file() and f.suffix.lower() in AUDIO_EXTS)
     return []
 
 
 # ---------------------------------------------------------------------------
 # ReplayGain via ffmpeg ebur128
 # ---------------------------------------------------------------------------
+
 
 def _measure_loudness_ffmpeg(filepath: Path) -> Optional[dict]:
     """Measure integrated loudness using ffmpeg ebur128 filter.
@@ -60,9 +59,16 @@ def _measure_loudness_ffmpeg(filepath: Path) -> Optional[dict]:
     try:
         result = subprocess.run(
             [
-                "ffmpeg", "-nostats", "-hide_banner", "-i", str(filepath),
-                "-filter_complex", "ebur128=peak=true",
-                "-f", "null", "-",
+                "ffmpeg",
+                "-nostats",
+                "-hide_banner",
+                "-i",
+                str(filepath),
+                "-filter_complex",
+                "ebur128=peak=true",
+                "-f",
+                "null",
+                "-",
             ],
             capture_output=True,
             timeout=120,
@@ -128,8 +134,8 @@ def _write_replaygain_tags(filepath: Path, gain_db: float, peak: float) -> bool:
     """
     try:
         import mutagen
-        from mutagen.id3 import ID3, TXXX, APIC
         from mutagen.flac import FLAC, VorbisComment
+        from mutagen.id3 import APIC, ID3, TXXX
         from mutagen.mp4 import MP4, MP4Cover
     except ImportError:
         logger.warning("mutagen not available for ReplayGain tags")
@@ -144,7 +150,6 @@ def _write_replaygain_tags(filepath: Path, gain_db: float, peak: float) -> bool:
         # Normalize peak to 0.0-1.0 range from dBFS
         peak_normalized = 1.0
         if peak is not None and peak < 0:
-            import math
             peak_normalized = 10 ** (peak / 20.0)
         peak_normalized = min(peak_normalized, 1.0)
 
@@ -152,14 +157,8 @@ def _write_replaygain_tags(filepath: Path, gain_db: float, peak: float) -> bool:
             try:
                 if not audio.tags:
                     audio.add_tags()
-                audio.tags.add(
-                    TXXX(encoding=3, desc="REPLAYGAIN_TRACK_GAIN",
-                         value=f"{gain_db:+.2f} dB")
-                )
-                audio.tags.add(
-                    TXXX(encoding=3, desc="REPLAYGAIN_TRACK_PEAK",
-                         value=f"{peak_normalized:.8f}")
-                )
+                audio.tags.add(TXXX(encoding=3, desc="REPLAYGAIN_TRACK_GAIN", value=f"{gain_db:+.2f} dB"))
+                audio.tags.add(TXXX(encoding=3, desc="REPLAYGAIN_TRACK_PEAK", value=f"{peak_normalized:.8f}"))
             except Exception:
                 return False
         elif ext == ".flac":
@@ -219,7 +218,9 @@ def compute_replaygain(filepath: Path) -> bool:
     if _write_replaygain_tags(filepath, gain_db, peak):
         logger.info(
             "ReplayGain for %s: gain=%.2f dB, peak=%.2f dBFS",
-            filepath.name, gain_db, peak,
+            filepath.name,
+            gain_db,
+            peak,
         )
         return True
     return False
@@ -229,6 +230,7 @@ def compute_replaygain(filepath: Path) -> bool:
 # EBU R128 loudnorm (two-pass)
 # ---------------------------------------------------------------------------
 
+
 def _loudnorm_pass1(filepath: Path, target_lufs: float, true_peak: float) -> Optional[dict]:
     """Run the first pass of ffmpeg loudnorm to measure stats.
 
@@ -237,10 +239,14 @@ def _loudnorm_pass1(filepath: Path, target_lufs: float, true_peak: float) -> Opt
     try:
         result = subprocess.run(
             [
-                "ffmpeg", "-i", str(filepath),
+                "ffmpeg",
+                "-i",
+                str(filepath),
                 "-filter_complex",
                 f"loudnorm=I={target_lufs}:TP={true_peak}:LRA=11:print_format=json",
-                "-f", "null", "-",
+                "-f",
+                "null",
+                "-",
             ],
             capture_output=True,
             timeout=300,
@@ -270,7 +276,7 @@ def _loudnorm_pass1(filepath: Path, target_lufs: float, true_peak: float) -> Opt
             break
 
     if json_start >= 0:
-        json_text = "\n".join(lines[json_start:json_end + 1])
+        json_text = "\n".join(lines[json_start : json_end + 1])
         try:
             return json.loads(json_text)
         except json.JSONDecodeError:
@@ -324,7 +330,10 @@ def apply_loudnorm(
 
     try:
         cmd = [
-            "ffmpeg", "-y", "-i", str(filepath),
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(filepath),
             "-filter_complex",
             (
                 f"loudnorm=I={target_lufs}:TP={true_peak}:LRA=11:"
@@ -332,8 +341,10 @@ def apply_loudnorm(
                 f"measured_LRA={measured_lra}:measured_thresh={measured_thresh}:"
                 f"offset={offset}:linear=true:print_format=summary"
             ),
-            "-map_metadata", "0",
-            "-map", "0",
+            "-map_metadata",
+            "0",
+            "-map",
+            "0",
             str(tmp_path),
         ]
 
@@ -341,7 +352,8 @@ def apply_loudnorm(
         if result.returncode != 0:
             logger.warning(
                 "loudnorm pass 2 failed for %s: %s",
-                filepath, result.stderr.decode("utf-8", errors="replace")[:200],
+                filepath,
+                result.stderr.decode("utf-8", errors="replace")[:200],
             )
             tmp_path.unlink(missing_ok=True)
             return False
@@ -350,7 +362,9 @@ def apply_loudnorm(
         tmp_path.replace(filepath)
         logger.info(
             "Loudnorm applied to %s: I=%.1f LUFS, TP=%.1f dBTP",
-            filepath.name, target_lufs, true_peak,
+            filepath.name,
+            target_lufs,
+            true_peak,
         )
         return True
     except (subprocess.TimeoutExpired, OSError) as exc:
@@ -362,6 +376,7 @@ def apply_loudnorm(
 # ---------------------------------------------------------------------------
 # CLI handler
 # ---------------------------------------------------------------------------
+
 
 def run_normalize(args) -> int:
     """CLI handler for the ``normalize`` subcommand.

@@ -10,21 +10,21 @@ Tables:
     lyrics_cache  — cached lyric bundles keyed by track signature
     metadata_cache — cached artist/album/cover metadata
 """
+
 from __future__ import annotations
 
 import json
 import os
 import shutil
-import signal
 import sqlite3
 import time
 from pathlib import Path
 from typing import Optional
 
-
 # ---------------------------------------------------------------------------
 # PID helpers
 # ---------------------------------------------------------------------------
+
 
 def _is_pid_alive(pid: int) -> bool:
     """Check whether a process with *pid* is still running."""
@@ -45,6 +45,7 @@ def _is_pid_alive(pid: int) -> bool:
 # Row factory
 # ---------------------------------------------------------------------------
 
+
 def _dict_factory(cursor, row):
     d = {}
     for idx, col in enumerate(cursor.description):
@@ -55,6 +56,7 @@ def _dict_factory(cursor, row):
 # ---------------------------------------------------------------------------
 # StateDB
 # ---------------------------------------------------------------------------
+
 
 class StateDB:
     """Central SQLite state manager for OtterRip.
@@ -273,9 +275,7 @@ class StateDB:
 
     def queue_claim(self, pid: int, lease_seconds: int = 300) -> Optional[dict]:
         """Claim the first pending task, setting a lease. Returns task dict or None."""
-        row = self._conn.execute(
-            "SELECT * FROM queue WHERE status = 'pending' ORDER BY id ASC LIMIT 1"
-        ).fetchone()
+        row = self._conn.execute("SELECT * FROM queue WHERE status = 'pending' ORDER BY id ASC LIMIT 1").fetchone()
         if row is None:
             return None
         task_id = row["id"]
@@ -287,9 +287,7 @@ class StateDB:
         )
         self._conn.commit()
         # Re-fetch to return the updated row
-        updated = self._conn.execute(
-            "SELECT * FROM queue WHERE id = ?", (task_id,)
-        ).fetchone()
+        updated = self._conn.execute("SELECT * FROM queue WHERE id = ?", (task_id,)).fetchone()
         return dict(updated) if updated else dict(row)
 
     def queue_finish(self, task_id: int, status: str, error: str = "", summary: str = "") -> bool:
@@ -316,9 +314,7 @@ class StateDB:
         recovered = cur1.rowcount
 
         # Dead PIDs (for tasks without expired lease check)
-        running = self._conn.execute(
-            "SELECT * FROM queue WHERE status = 'running'"
-        ).fetchall()
+        running = self._conn.execute("SELECT * FROM queue WHERE status = 'running'").fetchall()
         for task in running:
             pid = task.get("pid")
             if pid and not _is_pid_alive(pid):
@@ -376,33 +372,25 @@ class StateDB:
 
     def queue_clear_done(self) -> int:
         """Remove tasks with terminal status. Returns count removed."""
-        cur = self._conn.execute(
-            "DELETE FROM queue WHERE status IN ('done', 'failed', 'cancelled')"
-        )
+        cur = self._conn.execute("DELETE FROM queue WHERE status IN ('done', 'failed', 'cancelled')")
         self._conn.commit()
         return cur.rowcount
 
     def queue_list(self) -> list[dict]:
         """Return all queue tasks ordered by id."""
-        rows = self._conn.execute(
-            "SELECT * FROM queue ORDER BY id ASC"
-        ).fetchall()
+        rows = self._conn.execute("SELECT * FROM queue ORDER BY id ASC").fetchall()
         return [dict(r) for r in rows]
 
     def queue_stats(self) -> dict:
         """Return counts grouped by status."""
-        rows = self._conn.execute(
-            "SELECT status, COUNT(*) as cnt FROM queue GROUP BY status"
-        ).fetchall()
+        rows = self._conn.execute("SELECT status, COUNT(*) as cnt FROM queue GROUP BY status").fetchall()
         stats = {r["status"]: r["cnt"] for r in rows}
         stats["total"] = sum(stats.values())
         return stats
 
     def queue_get(self, task_id: int, field: str) -> str:
         """Return a single field value for a task. Raises KeyError if not found."""
-        row = self._conn.execute(
-            "SELECT * FROM queue WHERE id = ?", (task_id,)
-        ).fetchone()
+        row = self._conn.execute("SELECT * FROM queue WHERE id = ?", (task_id,)).fetchone()
         if row is None:
             raise KeyError(f"Task {task_id} not found")
         val = row.get(field, "")
@@ -447,9 +435,7 @@ class StateDB:
 
     def history_list(self, max_rows: int = 50) -> list[dict]:
         """Return the most recent history entries."""
-        rows = self._conn.execute(
-            "SELECT * FROM history ORDER BY id DESC LIMIT ?", (max_rows,)
-        ).fetchall()
+        rows = self._conn.execute("SELECT * FROM history ORDER BY id DESC LIMIT ?", (max_rows,)).fetchall()
         return [dict(r) for r in reversed(rows)]
 
     def history_clear(self, mode: str = "all") -> int:
@@ -472,9 +458,7 @@ class StateDB:
 
     def history_get_dests(self) -> list[str]:
         """Return unique destination paths from history."""
-        rows = self._conn.execute(
-            "SELECT DISTINCT dest FROM history WHERE dest != '' ORDER BY dest"
-        ).fetchall()
+        rows = self._conn.execute("SELECT DISTINCT dest FROM history WHERE dest != '' ORDER BY dest").fetchall()
         return [r["dest"] for r in rows]
 
     # =====================================================================
@@ -484,9 +468,7 @@ class StateDB:
     def lyrics_cache_get(self, key: str, ttl_seconds: int = 604800) -> Optional[dict]:
         """Get a cached lyric bundle. Returns None if missing or expired."""
         now = time.time()
-        row = self._conn.execute(
-            "SELECT * FROM lyrics_cache WHERE key = ?", (key,)
-        ).fetchone()
+        row = self._conn.execute("SELECT * FROM lyrics_cache WHERE key = ?", (key,)).fetchone()
         if row is None:
             return None
         cached_at = row["cached_at"]
@@ -517,9 +499,7 @@ class StateDB:
 
     def metadata_cache_get(self, key: str) -> Optional[dict]:
         """Get cached metadata. Returns None if missing."""
-        row = self._conn.execute(
-            "SELECT * FROM metadata_cache WHERE key = ?", (key,)
-        ).fetchone()
+        row = self._conn.execute("SELECT * FROM metadata_cache WHERE key = ?", (key,)).fetchone()
         if row is None:
             return None
         return json.loads(row["data"])
@@ -561,9 +541,7 @@ class StateDB:
 
     def subscription_list(self) -> list[dict]:
         """Return all subscriptions ordered by id."""
-        rows = self._conn.execute(
-            "SELECT * FROM subscriptions ORDER BY id ASC"
-        ).fetchall()
+        rows = self._conn.execute("SELECT * FROM subscriptions ORDER BY id ASC").fetchall()
         result = []
         for r in rows:
             d = dict(r)

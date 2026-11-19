@@ -14,6 +14,7 @@ exponential backoff retries. Results are cached in StateDB metadata_cache.
 Fallback: returns ``None`` on timeout, network error or no match so
 that the caller can fall back to the raw (cleaned) user text.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -23,7 +24,6 @@ import os
 from typing import List, Optional
 
 import aiohttp
-
 from otterrip_core.rate_limiter import MusicBrainzRateLimiter
 
 logger = logging.getLogger("otterrip_core.musicbrainz")
@@ -212,6 +212,7 @@ def _extract_release_info(recording: dict) -> dict:
 def _cache_key(title: str, artist: str, album: str = "") -> str:
     """Generate a cache key for a lookup query."""
     import hashlib
+
     raw = f"{title}|{artist}|{album}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
@@ -220,6 +221,7 @@ def _try_get_cached(key: str) -> Optional[CanonicalMetadata]:
     """Try to retrieve cached metadata from StateDB."""
     try:
         from otterrip_core.state_db import StateDB
+
         state_dir = os.environ.get("OTTERRIP_STATE_DIR", "")
         if not state_dir:
             return None
@@ -239,6 +241,7 @@ def _try_set_cached(key: str, meta: CanonicalMetadata) -> None:
     """Store metadata in StateDB cache."""
     try:
         from otterrip_core.state_db import StateDB
+
         state_dir = os.environ.get("OTTERRIP_STATE_DIR", "")
         if not state_dir:
             return
@@ -323,7 +326,8 @@ async def lookup_canonical(
         if not isinstance(rec, dict):
             logger.debug(
                 "MusicBrainz returned non-dict recording for '%s': %s",
-                query, type(rec).__name__,
+                query,
+                type(rec).__name__,
             )
             return None
 
@@ -360,8 +364,7 @@ async def lookup_canonical(
         _try_set_cached(key, meta)
 
         logger.info(
-            "MusicBrainz canonical: '%s' by '%s' "
-            "(duration=%.1fs, isrc=%s, id=%s, track=%d, year=%d)",
+            "MusicBrainz canonical: '%s' by '%s' (duration=%.1fs, isrc=%s, id=%s, track=%d, year=%d)",
             meta.title,
             meta.artist,
             meta.duration or 0,
@@ -463,7 +466,9 @@ async def lookup_by_isrc(
 
         logger.info(
             "MusicBrainz ISRC lookup: '%s' by '%s' (isrc=%s)",
-            meta.title, meta.artist, meta.isrc,
+            meta.title,
+            meta.artist,
+            meta.isrc,
         )
         return meta
 
@@ -477,6 +482,7 @@ async def lookup_by_isrc(
 # -----------------------------------------------------------------------
 # Synchronous wrappers for callers that are not async
 # -----------------------------------------------------------------------
+
 
 def lookup_canonical_sync(
     title: str,
@@ -497,10 +503,9 @@ def lookup_canonical_sync(
 
     if loop is not None:
         import concurrent.futures
+
         futures = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = futures.submit(
-            _run_in_new_loop, title, artist, album, timeout
-        )
+        future = futures.submit(_run_in_new_loop, title, artist, album, timeout)
         return future.result(timeout=timeout + 2)
     else:
         return _run_in_new_loop(title, artist, album, timeout)
@@ -518,6 +523,7 @@ def lookup_by_isrc_sync(
 
     if loop is not None:
         import concurrent.futures
+
         futures = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         future = futures.submit(_run_isrc_loop, isrc, timeout)
         return future.result(timeout=timeout + 2)
@@ -533,6 +539,7 @@ def _run_in_new_loop(
 ) -> Optional[CanonicalMetadata]:
     """Run lookup_canonical in a fresh event loop."""
     import asyncio as _aio
+
     return _aio.run(lookup_canonical(title, artist, album, timeout=timeout))
 
 
@@ -542,4 +549,5 @@ def _run_isrc_loop(
 ) -> Optional[CanonicalMetadata]:
     """Run lookup_by_isrc in a fresh event loop."""
     import asyncio as _aio
+
     return _aio.run(lookup_by_isrc(isrc, timeout=timeout))

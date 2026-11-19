@@ -1,6 +1,7 @@
-# Heavy dependencies for word-level lyrics alignment (opt-in).
-# Install only when LYRICS_SYNC_LEVEL=word is needed:
-#   pip install -r requirements-align.txt
-
+# Dependencies for word-level lyrics alignment (opt-in).
+# Default engine (LYRICS_SYNC_LEVEL=word): librosa — uses audio onsets,
+# robust for singing/instrumental, no speech model involved.
+# Alternate engine for the spike comparison (see requirements-align2.txt):
+# stable-ts — forced alignment of known text to audio.
 stable-ts>=0.1.0
 librosa>=0.10.0

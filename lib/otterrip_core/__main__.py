@@ -8,32 +8,35 @@ Available subcommands:
     fix-metadata, lyrics, lyrics-tool, verify-session, clean-names,
     merge-sessions, classify-log, doctor, queue, library, repair, convert
 """
-import sys
-import argparse
 
-from otterrip_core import detect_url
-from otterrip_core import doctor
-from otterrip_core import fix_metadata
-from otterrip_core import lyrics
-from otterrip_core import lyrics_tool
-from otterrip_core import clean_names
-from otterrip_core import verify_session
-from otterrip_core import merge_sessions
-from otterrip_core import classify_log
-from otterrip_core import queue
-from otterrip_core import library
-from otterrip_core import repair
-from otterrip_core import convert
-from otterrip_core import lyrics_verify
-from otterrip_core import lyrics_overrides
-from otterrip_core import state_db
-from otterrip_core import normalize
-from otterrip_core import post_process
-from otterrip_core import download_engine
-from otterrip_core import ytdlp_manager
-from otterrip_core import playlist_manager
-from otterrip_core import organize
-from otterrip_core import subscriptions
+import argparse
+import sys
+
+from otterrip_core import (
+    classify_log,
+    clean_names,
+    convert,
+    detect_url,
+    doctor,
+    download_engine,
+    fix_metadata,
+    library,
+    lyrics,
+    lyrics_overrides,
+    lyrics_tool,
+    lyrics_verify,
+    merge_sessions,
+    normalize,
+    organize,
+    playlist_manager,
+    post_process,
+    queue,
+    repair,
+    state_db,
+    subscriptions,
+    verify_session,
+    ytdlp_manager,
+)
 
 
 def positive_int(value: str) -> int:
@@ -266,10 +269,12 @@ def build_parser() -> argparse.ArgumentParser:
     # --- organize ---
     p = sub.add_parser("organize", help="Reorganize music files")
     p.add_argument("path", help="Directory to organize")
-    p.add_argument("--template", default="{artist}/{album}/{track} - {title}",
-                   help="Organization template (default: {artist}/{album}/{track} - {title})")
-    p.add_argument("--dry-run", action="store_true", default=True,
-                   help="Preview changes without moving files")
+    p.add_argument(
+        "--template",
+        default="{artist}/{album}/{track} - {title}",
+        help="Organization template (default: {artist}/{album}/{track} - {title})",
+    )
+    p.add_argument("--dry-run", action="store_true", default=True, help="Preview changes without moving files")
     p.add_argument("--apply", action="store_true", help="Apply changes (move files)")
     p.add_argument("--json", action="store_true", help="Output as JSON")
 
@@ -278,8 +283,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub_sub = p.add_subparsers(dest="subscriptions_cmd")
     p_add = sub_sub.add_parser("add", help="Add a subscription")
     p_add.add_argument("url", help="YouTube playlist URL")
-    p_add.add_argument("--interval", type=int, default=86400,
-                       help="Check interval in seconds (default: 86400)")
+    p_add.add_argument("--interval", type=int, default=86400, help="Check interval in seconds (default: 86400)")
     p_rm = sub_sub.add_parser("remove", help="Remove a subscription")
     p_rm.add_argument("url", help="URL to remove")
     p_sub_list = sub_sub.add_parser("list", help="List subscriptions")
@@ -289,8 +293,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_check.add_argument("--download", action="store_true", help="Download new songs")
     p_check.add_argument("--json", action="store_true", help="Output as JSON")
     p_timer = sub_sub.add_parser("timer", help="Configure systemd timer")
-    p_timer.add_argument("--enable", action="store_true", default=True,
-                         help="Enable the timer (default)")
+    p_timer.add_argument("--enable", action="store_true", default=True, help="Enable the timer (default)")
     p_timer.add_argument("--disable", action="store_true", help="Disable the timer")
 
     # --- repair ---
@@ -367,20 +370,20 @@ def build_parser() -> argparse.ArgumentParser:
     # --- normalize ---
     p = sub.add_parser("normalize", help="Normalize audio volume")
     p.add_argument("target", help="Audio file or directory")
-    p.add_argument("--mode", default="replaygain", choices=["replaygain", "loudnorm"],
-                   help="Normalization mode (default: replaygain)")
-    p.add_argument("--target-lufs", type=float, default=-16.0,
-                   help="Target integrated loudness in LUFS (default: -16)")
-    p.add_argument("--true-peak", type=float, default=-1.5,
-                   help="True peak limit in dBTP (default: -1.5)")
+    p.add_argument(
+        "--mode",
+        default="replaygain",
+        choices=["replaygain", "loudnorm"],
+        help="Normalization mode (default: replaygain)",
+    )
+    p.add_argument("--target-lufs", type=float, default=-16.0, help="Target integrated loudness in LUFS (default: -16)")
+    p.add_argument("--true-peak", type=float, default=-1.5, help="True peak limit in dBTP (default: -1.5)")
 
     # --- post-process ---
     p = sub.add_parser("post-process", help="Post-processing pipeline")
     p.add_argument("target", help="Audio file or directory")
-    p.add_argument("--keep-thumbnail", action="store_true",
-                   help="Keep video thumbnail instead of fetching cover art")
-    p.add_argument("--session", default="",
-                   help="Session manifest file (JSON lines)")
+    p.add_argument("--keep-thumbnail", action="store_true", help="Keep video thumbnail instead of fetching cover art")
+    p.add_argument("--session", default="", help="Session manifest file (JSON lines)")
 
     # --- download engine ---
     p = sub.add_parser("download", help="Download engine using yt-dlp API")
@@ -448,8 +451,8 @@ COMMAND_MAP = {
 def _run_state_db(args) -> int:
     """Handle state-db subcommands."""
     import json as _json
-    import shutil as _shutil
     import os as _os
+    import shutil as _shutil
 
     cmd = getattr(args, "state_db_cmd", None)
     if not cmd:
@@ -537,6 +540,7 @@ def _run_state_db(args) -> int:
             print("No state.db to backup.", file=sys.stderr)
             return 1
         import time as _time
+
         ts = _time.strftime("%Y%m%d_%H%M%S")
         backup_path = f"{db_path}.bak.{ts}"
         _shutil.copy2(db_path, backup_path)
@@ -609,21 +613,32 @@ def _run_ytdlp(args) -> int:
             ytdlp_manager._update_last_check()
             current = ytdlp_manager.get_version() or "unknown"
             latest = ytdlp_manager.get_latest_version() or "unknown"
-            print(_json.dumps({
-                "installed": current,
-                "latest": latest,
-                "update_available": available,
-            }, ensure_ascii=False))
+            print(
+                _json.dumps(
+                    {
+                        "installed": current,
+                        "latest": latest,
+                        "update_available": available,
+                    },
+                    ensure_ascii=False,
+                )
+            )
             return 0 if available else 1
         else:
             state = ytdlp_manager._load_state()
             last_check = state.get("last_check", 0)
             import time as _time
+
             days_left = (ytdlp_manager.UPDATE_CHECK_INTERVAL - (_time.time() - last_check)) / (24 * 60 * 60)
-            print(_json.dumps({
-                "update_available": False,
-                "next_check_in_days": round(days_left, 1),
-            }, ensure_ascii=False))
+            print(
+                _json.dumps(
+                    {
+                        "update_available": False,
+                        "next_check_in_days": round(days_left, 1),
+                    },
+                    ensure_ascii=False,
+                )
+            )
             return 1
 
     elif cmd == "update":
@@ -650,6 +665,7 @@ def _run_new_commands(args) -> int:
             compute_fingerprint,
             compute_fingerprint_acoustid,
         )
+
         if getattr(args, "acoustid", False):
             result = compute_fingerprint_acoustid(args.audio_file)
             if result:
@@ -667,9 +683,10 @@ def _run_new_commands(args) -> int:
 
     elif cmd == "cover-art":
         from otterrip_core.cover_art import (
-            fetch_and_cache_cover,
             embed_cover,
+            fetch_and_cache_cover,
         )
+
         size = getattr(args, "size", "250") or "250"
         do_cache = getattr(args, "cache", False)
         embed_file = getattr(args, "embed", "")
@@ -678,6 +695,7 @@ def _run_new_commands(args) -> int:
             data = fetch_and_cache_cover(args.release_id, size)
         else:
             from otterrip_core.cover_art import fetch_cover_art
+
             data = fetch_cover_art(args.release_id, size)
 
         if data is None:
@@ -698,9 +716,10 @@ def _run_new_commands(args) -> int:
 
     elif cmd == "mb-lookup":
         from otterrip_core.musicbrainz import (
-            lookup_canonical_sync,
             lookup_by_isrc_sync,
+            lookup_canonical_sync,
         )
+
         isrc = getattr(args, "isrc", "")
         if isrc:
             meta = lookup_by_isrc_sync(isrc)
@@ -756,6 +775,7 @@ def main() -> int:
 
     if args.command == "dashboard":
         from otterrip_core.dashboard import run_dashboard
+
         return run_dashboard(args)
 
     if handler is None:

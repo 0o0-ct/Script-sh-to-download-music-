@@ -9,23 +9,87 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.12"
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest
+          uv pip install --system -r requirements.txt
+          uv pip install --system pytest pytest-asyncio
 
       - name: Run pytest
         run: |
           PYTHONPATH=lib python -m pytest tests/ -q
+
+  ruff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install ruff
+        run: uv tool install ruff
+
+      - name: Check lint
+        run: ruff check lib/otterrip_core/
+
+      - name: Check format
+        run: ruff format --check lib/otterrip_core/
+
+  mypy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system -r requirements.txt
+          uv pip install --system mypy
+
+      - name: Run mypy
+        run: mypy lib/otterrip_core/ || true
+
+  shfmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shfmt
+        run: |
+          go install mvdan.cc/sh/v3/cmd/shfmt@latest
+
+      - name: Check shell format
+        run: shfmt -d Down-Linux-music_v7.sh || true
+
+  pester:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Pester
+        run: |
+          Install-Module -Name Pester -Force -Scope CurrentUser
+
+      - name: Run Pester tests
+        run: |
+          Invoke-Pester -Path "tests/Windows" -Output Normal
 
   shellcheck:
     runs-on: ubuntu-latest

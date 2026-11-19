@@ -26,6 +26,7 @@ means most lines only line up with onsets at *that* shift; a value near
 librosa is an OPTIONAL dependency (requirements-align.txt).  Without it
 the estimator reports zero confidence and nothing changes.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -34,10 +35,10 @@ from typing import Optional, Sequence
 from otterrip_core.lrc_validator import normalise_lrc
 
 # Sanity bounds for the automatic shift.
-DEFAULT_MAX_SHIFT_MS = 15_000   # never shift more than ±15 s
-MIN_USEFUL_SHIFT_MS = 200       # smaller offsets are jitter, not drift
-MIN_LINES = 8                   # need enough lines for statistics
-CONFIDENCE_THRESHOLD = 0.55     # below this, do not touch the timestamps
+DEFAULT_MAX_SHIFT_MS = 15_000  # never shift more than ±15 s
+MIN_USEFUL_SHIFT_MS = 200  # smaller offsets are jitter, not drift
+MIN_LINES = 8  # need enough lines for statistics
+CONFIDENCE_THRESHOLD = 0.55  # below this, do not touch the timestamps
 
 # How much envelope we average around each (shifted) line start: vocals
 # start on an onset, so a short positive window captures the entry.
@@ -67,12 +68,10 @@ def _stats(values: Sequence[float]) -> tuple[float, float]:
         return 0.0, 0.0
     mean = sum(values) / n
     var = sum((v - mean) ** 2 for v in values) / n
-    return mean, var ** 0.5
+    return mean, var**0.5
 
 
-def _decode_audio_ffmpeg(
-    path: str, sr: int = 22050
-) -> Optional["object"]:  # noqa: F821 - numpy array, only with librosa
+def _decode_audio_ffmpeg(path: str, sr: int = 22050) -> Optional["object"]:  # noqa: F821 - numpy array, only with librosa
     """Decode any audio format (m4a/aac/opus…) to mono float32 via ffmpeg.
 
     libsndfile (soundfile) — librosa's default reader — cannot read AAC/M4A,
@@ -81,10 +80,23 @@ def _decode_audio_ffmpeg(
     plenty for onset detection and keeps memory small.
     """
     cmd = [
-        "ffmpeg", "-v", "error", "-i", path,
-        "-vn", "-map_metadata", "-1",
-        "-f", "f32le", "-acodec", "pcm_f32le",
-        "-ac", "1", "-ar", str(sr), "pipe:1",
+        "ffmpeg",
+        "-v",
+        "error",
+        "-i",
+        path,
+        "-vn",
+        "-map_metadata",
+        "-1",
+        "-f",
+        "f32le",
+        "-acodec",
+        "pcm_f32le",
+        "-ac",
+        "1",
+        "-ar",
+        str(sr),
+        "pipe:1",
     ]
     try:
         import numpy as np  # librosa's hard dependency; present whenever we run
@@ -134,9 +146,7 @@ def onset_envelope(path: str) -> Optional[tuple[list[float], float]]:
         if y is None:
             return None
     try:
-        env = librosa.onset.onset_strength(
-            y=np.asarray(y, dtype=np.float32), sr=sr, hop_length=512
-        )
+        env = librosa.onset.onset_strength(y=np.asarray(y, dtype=np.float32), sr=sr, hop_length=512)
         frame_ms = 512 / float(sr) * 1000.0
         return [float(v) for v in env], frame_ms
     except Exception:
@@ -221,7 +231,13 @@ def estimate_offset_ms(
 
     win_frames = max(1, int(ENTRY_WINDOW_MS / frame_ms))
     scores, hits, shifts = _line_scores(
-        smooth, prefix, frame_ms, starts, win_frames, baseline, max_shift_ms,
+        smooth,
+        prefix,
+        frame_ms,
+        starts,
+        win_frames,
+        baseline,
+        max_shift_ms,
     )
     if not scores:
         return 0, 0.0
@@ -307,8 +323,11 @@ def auto_align_bundle(
     envelope, frame_ms = result
 
     offset_ms, confidence = estimate_offset_ms(
-        envelope, frame_ms, [ms for ms, _ in bundle.lines],
-        max_shift_ms=max_shift_ms, min_lines=min_lines,
+        envelope,
+        frame_ms,
+        [ms for ms, _ in bundle.lines],
+        max_shift_ms=max_shift_ms,
+        min_lines=min_lines,
     )
     if abs(offset_ms) < MIN_USEFUL_SHIFT_MS:
         return 0, confidence, NOTE_NO_SIGNIFICANT

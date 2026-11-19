@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Classify yt-dlp log errors (classify-log command)."""
+
 from __future__ import annotations
 
 import re
 from pathlib import Path
-
 
 # Patterns that indicate each error class
 RECOVERABLE_PATTERNS = [

@@ -15,6 +15,7 @@ Order of quality (sync-first):
 
 All providers share the same backoff helper and LRC validation logic.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -23,15 +24,16 @@ import logging
 import time
 from typing import Optional
 
-from otterrip_core.lyrics_bundle import LyricsBundle
-from otterrip_core.lrc_validator import validate_and_normalise_lrc, normalise_lrc
-from otterrip_core.query_clean import build_query_terms
 from otterrip_core.adapters.base import BaseProvider, SongQuery
+from otterrip_core.lrc_validator import normalise_lrc, validate_and_normalise_lrc
+from otterrip_core.lyrics_bundle import LyricsBundle
+from otterrip_core.query_clean import build_query_terms
 
 logger = logging.getLogger("otterrip_core.syncedlyrics_adapter")
 
 
 # ── Exponential backoff helper ─────────────────────────────────────
+
 
 async def _search_with_backoff(
     search_func,
@@ -59,16 +61,21 @@ async def _search_with_backoff(
             return text
         except Exception as exc:
             if attempt < max_retries - 1:
-                wait = backoff_base * (2 ** attempt)
+                wait = backoff_base * (2**attempt)
                 logger.debug(
                     "syncedlyrics %s attempt %d failed (%s), retrying in %.1fs",
-                    source, attempt + 1, exc, wait,
+                    source,
+                    attempt + 1,
+                    exc,
+                    wait,
                 )
                 await asyncio.sleep(wait)
             else:
                 logger.warning(
                     "syncedlyrics %s failed after %d attempts: %s",
-                    source, max_retries, exc,
+                    source,
+                    max_retries,
+                    exc,
                 )
     return None
 
@@ -77,14 +84,15 @@ async def _search_with_backoff(
 
 # (source_name, supports_sync, supports_lang)
 SOURCE_META = {
-    "musixmatch":  (True,  True),   # best non-lrclib sync, lang filter
-    "netease":     (True,  False),  # good for C-pop
-    "megalobiz":   (True,  False),  # fallback sync
-    "genius":      (False, False),  # plain text only
+    "musixmatch": (True, True),  # best non-lrclib sync, lang filter
+    "netease": (True, False),  # good for C-pop
+    "megalobiz": (True, False),  # fallback sync
+    "genius": (False, False),  # plain text only
 }
 
 
 # ── Individual provider class ──────────────────────────────────────
+
 
 class SyncedlyricsProvider(BaseProvider):
     """A single syncedlyrics source as a standalone provider.
@@ -118,6 +126,7 @@ class SyncedlyricsProvider(BaseProvider):
     @classmethod
     def max_sync_level(cls):
         from otterrip_core.models import SyncLevel
+
         return SyncLevel.LINES
 
     async def search(self, query: SongQuery) -> list[LyricsBundle]:
@@ -136,8 +145,13 @@ class SyncedlyricsProvider(BaseProvider):
 
         t0 = time.monotonic()
         text = await _search_with_backoff(
-            _search, search_term, self.source, prefer_synced, lang,
-            max_retries=self.MAX_RETRIES, backoff_base=self.BACKOFF_BASE,
+            _search,
+            search_term,
+            self.source,
+            prefer_synced,
+            lang,
+            max_retries=self.MAX_RETRIES,
+            backoff_base=self.BACKOFF_BASE,
         )
         elapsed_ms = int((time.monotonic() - t0) * 1000)
 
@@ -152,47 +166,48 @@ class SyncedlyricsProvider(BaseProvider):
         bundles: list[LyricsBundle] = []
 
         # Validate any LRC content found.
-        validation = validate_and_normalise_lrc(
-            text, audio_duration_s=query.duration
-        )
+        validation = validate_and_normalise_lrc(text, audio_duration_s=query.duration)
 
         if validation.valid and validation.entries:
             confidence = self._confidence(query, validation)
-            bundles.append(LyricsBundle(
-                kind="line",
-                lrc=normalise_lrc(validation.entries),
-                plain=validation.plain,
-                lines=validation.entries,
-                source=f"{self.source} | {search_term}",
-                audio_duration_ms=(
-                    int(round(query.duration * 1000))
-                    if query.duration is not None else None
-                ),
-                confidence=confidence,
-                warnings=validation.warnings + [f"{elapsed_ms} ms"],
-            ))
+            bundles.append(
+                LyricsBundle(
+                    kind="line",
+                    lrc=normalise_lrc(validation.entries),
+                    plain=validation.plain,
+                    lines=validation.entries,
+                    source=f"{self.source} | {search_term}",
+                    audio_duration_ms=(int(round(query.duration * 1000)) if query.duration is not None else None),
+                    confidence=confidence,
+                    warnings=validation.warnings + [f"{elapsed_ms} ms"],
+                )
+            )
             logger.info(
                 "%s: synced LRC (%d lines, %d ms, conf=%.2f)",
-                self.source, len(validation.entries), elapsed_ms, confidence,
+                self.source,
+                len(validation.entries),
+                elapsed_ms,
+                confidence,
             )
             return bundles
 
         # If synced-only was requested and this source has no valid sync,
         # try plain as fallback.
         if text.strip():
-            bundles.append(LyricsBundle(
-                kind="plain",
-                plain=text.strip(),
-                source=f"{self.source} | {search_term}",
-                audio_duration_ms=(
-                    int(round(query.duration * 1000))
-                    if query.duration is not None else None
-                ),
-                confidence=0.5,
-                warnings=[f"{elapsed_ms} ms"],
-            ))
+            bundles.append(
+                LyricsBundle(
+                    kind="plain",
+                    plain=text.strip(),
+                    source=f"{self.source} | {search_term}",
+                    audio_duration_ms=(int(round(query.duration * 1000)) if query.duration is not None else None),
+                    confidence=0.5,
+                    warnings=[f"{elapsed_ms} ms"],
+                )
+            )
             logger.info(
-                "%s: plain text (%d ms)", self.source, elapsed_ms,
+                "%s: plain text (%d ms)",
+                self.source,
+                elapsed_ms,
             )
             return bundles
 
@@ -224,6 +239,7 @@ class SyncedlyricsProvider(BaseProvider):
 
 
 # ── Factory: build all individual providers ────────────────────────
+
 
 def build_syncedlyrics_providers() -> list[SyncedlyricsProvider]:
     """Return all syncedlyrics providers in quality order.

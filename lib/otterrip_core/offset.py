@@ -10,6 +10,7 @@ This is the opposite of the ``[offset:]`` LRC header convention used by
 some players, which is why the offset is applied directly to timestamps
 and the header is not relied upon.
 """
+
 from __future__ import annotations
 
 from otterrip_core.lrc_validator import shift_lrc as _shift_lrc_text

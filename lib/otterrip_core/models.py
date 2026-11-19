@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Shared data models for OtterRip Core."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -9,6 +10,7 @@ from typing import Optional
 
 class SyncLevel(enum.IntEnum):
     """Hierarchy of lyric synchronization detail."""
+
     NONE = 0
     LINES = 1
     WORDS = 2
@@ -18,6 +20,7 @@ class SyncLevel(enum.IntEnum):
 @dataclasses.dataclass
 class LyricsResult:
     """Normalised lyric result from any provider."""
+
     provider: str
     title: str = ""
     artist: str = ""
@@ -28,13 +31,13 @@ class LyricsResult:
     plain_text: str = ""
     # List of (timestamp_seconds, text) — text may be a line, word, or syllable
     timed_entries: list[tuple[float, str]] = dataclasses.field(default_factory=list)
-    original_format: str = ""          # lrc, ttml, qrc, json, txt, ...
-    confidence: float = 0.0           # 0.0 – 1.0
+    original_format: str = ""  # lrc, ttml, qrc, json, txt, ...
+    confidence: float = 0.0  # 0.0 – 1.0
     isrc: str = ""
     video_id: str = ""
     track_number: Optional[int] = None
     attribution: str = ""
-    storable: bool = True             # may the result be cached?
+    storable: bool = True  # may the result be cached?
 
     @property
     def has_sync(self) -> bool:

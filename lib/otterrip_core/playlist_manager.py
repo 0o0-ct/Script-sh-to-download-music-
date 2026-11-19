@@ -7,20 +7,20 @@ and detect new/removed songs.
 Uses yt-dlp API (flat) to extract playlist info and mutagen
 to read tags from local audio files.
 """
+
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 from pathlib import Path
-from typing import Optional
 
 try:
     import mutagen
-    from mutagen.mp3 import MP3
     from mutagen.flac import FLAC
+    from mutagen.mp3 import MP3
     from mutagen.mp4 import MP4
+
     HAS_MUTAGEN = True
 except ImportError:
     HAS_MUTAGEN = False
@@ -121,13 +121,15 @@ def _extract_playlist(url: str) -> list[dict]:
                 video_id = entry.get("id", "")
                 duration = entry.get("duration", 0)
 
-                entries.append({
-                    "title": title,
-                    "artist": artist,
-                    "url": webpage_url,
-                    "id": video_id,
-                    "duration": duration or 0,
-                })
+                entries.append(
+                    {
+                        "title": title,
+                        "artist": artist,
+                        "url": webpage_url,
+                        "id": video_id,
+                        "duration": duration or 0,
+                    }
+                )
     except Exception as exc:
         print(f"  Error extrayendo playlist: {exc}", file=sys.stderr)
 
@@ -192,10 +194,7 @@ class PlaylistManager:
         if not dest_path.is_dir():
             return []
 
-        files = sorted(
-            f for f in dest_path.rglob("*")
-            if f.is_file() and f.suffix.lower() in AUDIO_EXTS
-        )
+        files = sorted(f for f in dest_path.rglob("*") if f.is_file() and f.suffix.lower() in AUDIO_EXTS)
         return [_read_tags(f) for f in files]
 
     def sync(self, url: str, dest: str = "") -> dict:
@@ -245,10 +244,12 @@ class PlaylistManager:
             if key and key in local_lookup:
                 # Found a match
                 match = local_lookup[key][0]
-                unchanged_songs.append({
-                    "remote": entry,
-                    "local": match,
-                })
+                unchanged_songs.append(
+                    {
+                        "remote": entry,
+                        "local": match,
+                    }
+                )
                 matched_local_keys.add(key)
             else:
                 new_songs.append(entry)
@@ -314,7 +315,7 @@ def run_playlist(args) -> int:
         unchanged_count = len(result["unchanged"])
 
         print()
-        print(f"  ── Sincronización de playlist ──")
+        print("  ── Sincronización de playlist ──")
         print()
         print(f"  Nuevas canciones:    {new_count}")
         print(f"  Sin cambios:         {unchanged_count}")

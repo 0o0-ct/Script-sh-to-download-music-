@@ -4,29 +4,30 @@
 Provides shared Rich components for tables, progress bars, panels,
 and colored log output across the CLI and dashboard.
 """
+
 from __future__ import annotations
 
-import sys
 from typing import Any, Optional
 
 try:
+    from rich.columns import Columns
     from rich.console import Console
+    from rich.live import Live
+    from rich.logging import RichHandler
+    from rich.panel import Panel
     from rich.progress import (
+        BarColumn,
+        DownloadColumn,
+        MofNCompleteColumn,
         Progress,
         SpinnerColumn,
         TextColumn,
-        BarColumn,
-        DownloadColumn,
-        TransferSpeedColumn,
         TimeRemainingColumn,
-        MofNCompleteColumn,
+        TransferSpeedColumn,
     )
     from rich.table import Table
-    from rich.panel import Panel
-    from rich.columns import Columns
     from rich.text import Text
-    from rich.live import Live
-    from rich.logging import RichHandler
+
     HAS_RICH = True
 except ImportError:
     HAS_RICH = False
@@ -63,10 +64,12 @@ class _PlainConsole:
 
     def print_exception(self, **kwargs: Any) -> None:
         import traceback
+
         traceback.print_exc()
 
 
 # ── Progress Manager ─────────────────────────────────────────────────
+
 
 class ProgressManager:
     """Shared progress bar for downloads.
@@ -178,25 +181,23 @@ class MultiProgress:
 
 # ── Table Renderer ───────────────────────────────────────────────────
 
+
 class TableRenderer:
     """Render tabular data with Rich tables."""
 
     def __init__(self, title: str = ""):
         self.title = title
 
-    def render(self, headers: list[str], rows: list[list[str]],
-               show_header: bool = True) -> Table:
+    def render(self, headers: list[str], rows: list[list[str]], show_header: bool = True) -> Table:
         """Create a Rich Table with headers and rows."""
-        table = Table(title=self.title, show_header=show_header,
-                      header_style="bold magenta", border_style="blue")
+        table = Table(title=self.title, show_header=show_header, header_style="bold magenta", border_style="blue")
         for h in headers:
             table.add_column(h, overflow="fold")
         for row in rows:
             table.add_row(*[str(c) for c in row])
         return table
 
-    def print_table(self, headers: list[str], rows: list[list[str]],
-                    console: Optional[Any] = None) -> None:
+    def print_table(self, headers: list[str], rows: list[list[str]], console: Optional[Any] = None) -> None:
         """Print a table directly to console."""
         c = console or get_console()
         table = self.render(headers, rows)
@@ -205,18 +206,17 @@ class TableRenderer:
 
 # ── Panel Renderer ───────────────────────────────────────────────────
 
+
 class PanelRenderer:
     """Render Rich panels for dashboard sections."""
 
     @staticmethod
-    def render(title: str, content: str, style: str = "bold blue",
-               expand: bool = True) -> Panel:
+    def render(title: str, content: str, style: str = "bold blue", expand: bool = True) -> Panel:
         """Create a Rich Panel."""
         return Panel(content, title=title, style=style, expand=expand)
 
     @staticmethod
-    def print_panel(title: str, content: str, style: str = "bold blue",
-                    console: Optional[Any] = None) -> None:
+    def print_panel(title: str, content: str, style: str = "bold blue", console: Optional[Any] = None) -> None:
         """Print a panel directly."""
         c = console or get_console()
         panel = PanelRenderer.render(title, content, style)
@@ -231,6 +231,7 @@ class PanelRenderer:
 
 
 # ── Log Renderer ─────────────────────────────────────────────────────
+
 
 class LogRenderer:
     """Colored log output with Rich."""
@@ -275,11 +276,13 @@ class LogRenderer:
         """Return a Rich spinner context manager."""
         if HAS_RICH:
             from rich.spinner import Spinner
+
             return Spinner("dots", text)
         return None
 
 
 # ── Convenience functions ────────────────────────────────────────────
+
 
 def print_panel(title: str, content: str) -> None:
     """Quick panel print."""
@@ -287,8 +290,7 @@ def print_panel(title: str, content: str) -> None:
     c.print(Panel(content, title=title, style="bold blue"))
 
 
-def print_table(headers: list[str], rows: list[list[str]],
-                title: str = "") -> None:
+def print_table(headers: list[str], rows: list[list[str]], title: str = "") -> None:
     """Quick table print."""
     renderer = TableRenderer(title=title)
     renderer.print_table(headers, rows)

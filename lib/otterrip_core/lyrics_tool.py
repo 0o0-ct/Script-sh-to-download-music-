@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Lyrics utility commands (lyrics-tool subcommand)."""
+
 from __future__ import annotations
 
 import re
@@ -7,11 +8,11 @@ from pathlib import Path
 
 try:
     import mutagen
-    from mutagen.mp3 import MP3
     from mutagen.flac import FLAC
+    from mutagen.id3 import ID3, SYLT, USLT, ID3NoHeaderError
+    from mutagen.mp3 import MP3
     from mutagen.mp4 import MP4
-    from mutagen.id3 import ID3, USLT, SYLT
-    from mutagen.id3 import ID3NoHeaderError
+
     HAS_MUTAGEN = True
 except ImportError:
     HAS_MUTAGEN = False
@@ -109,6 +110,7 @@ def _embed_lyrics_text(audio, text: str) -> None:
             if any(l.strip().startswith("[") for l in text.split("\n") if l.strip()):
                 audio.tags.delall("TXXX:LYRICS")
                 from mutagen.id3 import TXXX
+
                 audio.tags.add(TXXX(encoding=3, desc="LYRICS", text=text))
         elif isinstance(audio, FLAC):
             audio["LYRICS"] = text.split("\n")
@@ -179,9 +181,7 @@ def run_lyrics_tool(args) -> int:
             return 1
 
         shift_s = ms_shift / 1000.0
-        new_entries = [
-            (max(0, ts + shift_s), txt) for ts, txt in entries
-        ]
+        new_entries = [(max(0, ts + shift_s), txt) for ts, txt in entries]
         new_text = _format_lrc(new_entries)
 
         if target.endswith(".lrc") or lrc_path.suffix == ".lrc":

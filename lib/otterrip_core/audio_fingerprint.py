@@ -23,6 +23,7 @@ The fingerprint is designed to be:
   encoding (MP3, FLAC, M4A) or bitrate differences
 - Optional: requires librosa or pyacoustid; falls back to None gracefully
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -30,7 +31,7 @@ import logging
 import os
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -79,9 +80,7 @@ def compute_fingerprint(audio_path: str | Path) -> Optional[str]:
     if fp is not None:
         return fp
 
-    logger.debug(
-        "No fingerprinting engine available (install pyacoustid or librosa)"
-    )
+    logger.debug("No fingerprinting engine available (install pyacoustid or librosa)")
     return None
 
 
@@ -131,7 +130,8 @@ def _fingerprint_pyacoustid(path: Path) -> Optional[str]:
             digest = hashlib.sha256(raw_fp.encode("utf-8")).hexdigest()[:DIGEST_LENGTH]
             logger.debug(
                 "Chromaprint (pyacoustid) fingerprint: %s → %s",
-                path.name, digest,
+                path.name,
+                digest,
             )
             return digest
     except Exception as exc:
@@ -156,7 +156,8 @@ def _fingerprint_fpcalc(path: Path) -> Optional[str]:
         digest = hashlib.sha256(raw_fp.encode("utf-8")).hexdigest()[:DIGEST_LENGTH]
         logger.debug(
             "Chromaprint (fpcalc) fingerprint: %s → %s",
-            path.name, digest,
+            path.name,
+            digest,
         )
         return digest
     except FileNotFoundError:
@@ -276,7 +277,10 @@ def compute_fingerprint_acoustid(
 
         logger.info(
             "AcoustID match: '%s' by '%s' (score=%.1f, mbid=%s)",
-            info["title"], info["artist"], info["score"], info["mbid"],
+            info["title"],
+            info["artist"],
+            info["score"],
+            info["mbid"],
         )
         return info
 
@@ -285,7 +289,7 @@ def compute_fingerprint_acoustid(
         return None
 
 
-def _quantize_chroma(chroma: "numpy.ndarray") -> bytes:
+def _quantize_chroma(chroma: Any) -> bytes:
     """Quantize chroma features to reduce sensitivity to small variations.
 
     Rounds each value to 2 decimal places and serializes to bytes.

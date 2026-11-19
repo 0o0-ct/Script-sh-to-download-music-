@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """Fix audio metadata (fix-metadata command)."""
+
 from __future__ import annotations
 
 import re
-import shutil
 from pathlib import Path
-from datetime import datetime
 
 try:
     import mutagen
-    from mutagen.mp3 import MP3
     from mutagen.flac import FLAC
+    from mutagen.id3 import APIC, ID3, SYLT, TALB, TCON, TDRC, TIT2, TPE1, TRCK, USLT, ID3NoHeaderError
+    from mutagen.mp3 import MP3
     from mutagen.mp4 import MP4, MP4Cover
-    from mutagen.id3 import ID3, APIC, TIT2, TPE1, TALB, TDRC, TRCK, TCON, USLT, SYLT
-    from mutagen.id3 import ID3NoHeaderError
+
     HAS_MUTAGEN = True
 except ImportError:
     HAS_MUTAGEN = False
@@ -57,6 +56,7 @@ def _get_audio_file(filepath: str):
 def _read_session(session_path: str) -> list[str]:
     """Read verified session file (JSON lines with file paths)."""
     import json
+
     files = []
     p = Path(session_path)
     if not p.is_file():
@@ -135,9 +135,7 @@ def _set_cover(audio, cover_path: str) -> None:
             if audio.tags is None:
                 audio.add_tags()
             audio.tags.delall("APIC:")
-            audio.tags.add(
-                APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=cover_data)
-            )
+            audio.tags.add(APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=cover_data))
         elif isinstance(audio, FLAC):
             audio.add_picture(cover_data)
         elif isinstance(audio, MP4):
@@ -216,8 +214,15 @@ def run_fix_metadata(args) -> int:
         if title:
             cleaned = _clean_title(title)
             if cleaned != title:
-                _set_tags(audio, cleaned, tags.get("artist", ""), tags.get("album", ""),
-                          tags.get("track", ""), tags.get("date", ""), tags.get("genre", ""))
+                _set_tags(
+                    audio,
+                    cleaned,
+                    tags.get("artist", ""),
+                    tags.get("album", ""),
+                    tags.get("track", ""),
+                    tags.get("date", ""),
+                    tags.get("genre", ""),
+                )
                 audio.save()
                 fixed += 1
                 print(f"  Título limpiado: {fpath}")

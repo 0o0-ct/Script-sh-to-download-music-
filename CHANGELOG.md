@@ -1,5 +1,24 @@
 # Changelog
 
+## [Letras sincronizadas palabra por palabra] - Unreleased
+
+### Added
+
+- **Motor de alineación de palabras (Enhanced LRC).** Nuevo
+  `aligner.align_words_to_audio()` (snap de palabras a onsets de librosa,
+  con `WordTiming` / `WordAlignReport`) y
+  `enhanced_lrc.align_words_in_place()` que integra el motor con el
+  `LyricsBundle`: rellena los timestamps de palabra faltantes y
+  re-alinea las que ya existen.
+- **Cableado en `lyrics.py`:** con `LYRICS_SYNC_LEVEL=word` y `has_sync`,
+  tras la alineación ya existente se generan los timestamps por palabra,
+  `best.kind` pasa a `"word"` y se escribe el sidecar `.elrc` (queda
+  integrado con el flujo existente de embed/sidecar).
+- **Tests:** `tests/test_word_alignment.py` — sin audio, con mocks de
+  `otterrip_core.aligner._detect_onsets`.
+- **`serialize_enhanced_lrc()` conserva ahora todos los headers** del
+  bundle (era un subset fijo).
+
 ## [Sin publicar] - 2026-11-17
 
 ### Fixed

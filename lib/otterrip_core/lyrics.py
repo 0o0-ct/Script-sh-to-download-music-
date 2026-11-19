@@ -9,12 +9,12 @@ de letras. Produce un :class:`LyricsBundle` por pista.  La escritura de
 tags/archivos (Parte 2) se mantiene sin cambios mediante compatibilidad
 con el formato legacy ``LyricsResult``.
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import re
 import time
 import unicodedata
 from pathlib import Path
@@ -22,36 +22,34 @@ from typing import Awaitable, Callable, Optional
 
 try:
     import mutagen
-    from mutagen.mp3 import MP3
     from mutagen.flac import FLAC
+    from mutagen.id3 import APIC, ID3, SYLT, TXXX, USLT, ID3NoHeaderError
+    from mutagen.mp3 import MP3
     from mutagen.mp4 import MP4, MP4Cover
-    from mutagen.id3 import ID3, USLT, SYLT, APIC, TXXX
-    from mutagen.id3 import ID3NoHeaderError
+
     HAS_MUTAGEN = True
 except ImportError:
     HAS_MUTAGEN = False
 
-from otterrip_core.models import LyricsResult, SyncLevel
-from otterrip_core.adapters.base import SongQuery
-from otterrip_core.lyrics_bundle import (
-    LyricsBundle,
-    bundle_from_legacy,
-)
-from otterrip_core.lrc_validator import validate_and_normalise_lrc
-from otterrip_core.query_clean import build_query_terms, clean_title, clean_artist
-from otterrip_core.lrc_cache import LyricsCache
-from otterrip_core.offset import apply_offset_to_bundle
-from otterrip_core.adapters.base import BaseProvider
+from otterrip_core.adapters.base import BaseProvider, SongQuery
 from otterrip_core.adapters.lrclib import LrclibProvider
 from otterrip_core.adapters.multiweb import MultiwebProvider
 from otterrip_core.adapters.syncedlyrics_adapter import (
     SyncedlyricsProvider,
     build_syncedlyrics_providers,
 )
+from otterrip_core.lrc_cache import LyricsCache
+from otterrip_core.lyrics_bundle import (
+    LyricsBundle,
+    bundle_from_legacy,
+)
+from otterrip_core.models import LyricsResult
 from otterrip_core.musicbrainz import CanonicalMetadata, lookup_canonical
+from otterrip_core.query_clean import build_query_terms
 
 try:
     from rapidfuzz import fuzz as _fuzz
+
     HAS_RAPIDFUZZ = True
 except ImportError:
     HAS_RAPIDFUZZ = False
@@ -132,16 +130,14 @@ def _has_lyrics(audio) -> bool:
         elif isinstance(audio, FLAC) and audio.tags:
             return bool(audio.get("LYRICS") or audio.get("SYNCEDLYRICS"))
         elif isinstance(audio, MP4) and audio.tags:
-            return bool(
-                audio.tags.get("\xa9lyr")
-                or audio.tags.get(ITUNES_SYNCED_ATOM)
-            )
+            return bool(audio.tags.get("\xa9lyr") or audio.tags.get(ITUNES_SYNCED_ATOM))
     except Exception:
         pass
     return False
 
 
 # ─── LRC formatting (legacy — Part 2 keeps this) ─────────────────
+
 
 def _format_lrc(entries: list[tuple[float, str]]) -> str:
     lines = []
@@ -175,9 +171,7 @@ def _embed_lyrics(audio, result: LyricsResult, mode: str = "embed") -> bool:
 
             if result.has_sync and result.timed_entries:
                 synced_text = [
-                    (text, round(timestamp * 1000))
-                    for timestamp, text in result.timed_entries
-                    if text.strip()
+                    (text, round(timestamp * 1000)) for timestamp, text in result.timed_entries if text.strip()
                 ]
                 if synced_text:
                     audio.tags.add(
@@ -192,9 +186,7 @@ def _embed_lyrics(audio, result: LyricsResult, mode: str = "embed") -> bool:
                 # TXXX:LYRICS with LRC format — PowerAmp reads synced lyrics from here
                 lrc_text = _format_lrc(result.timed_entries)
                 if lrc_text:
-                    audio.tags.add(
-                        TXXX(encoding=3, desc="LYRICS", text=lrc_text)
-                    )
+                    audio.tags.add(TXXX(encoding=3, desc="LYRICS", text=lrc_text))
 
             plain = result.plain_text or "\n".join(t for _, t in result.timed_entries)
             if plain:
@@ -223,7 +215,7 @@ def _embed_lyrics(audio, result: LyricsResult, mode: str = "embed") -> bool:
         audio.save()
         return True
     except Exception as exc:
-        logger.error("error al incrustar letras en %s: %s", getattr(audio, 'filename', '?'), exc)
+        logger.error("error al incrustar letras en %s: %s", getattr(audio, "filename", "?"), exc)
         return False
 
 
@@ -322,6 +314,7 @@ def _build_providers(
 
 # ─── Provider fallback ───────────────────────────────────────────
 
+
 async def _search_one(
     provider: BaseProvider,
     query: SongQuery,
@@ -337,14 +330,15 @@ async def _search_one(
         # Multiweb tries several sources sequentially; scale timeout.
         if isinstance(provider, MultiwebProvider):
             provider_timeout *= len(provider.sources)
-        results = await asyncio.wait_for(
-            provider.search(query), timeout=provider_timeout
-        )
+        results = await asyncio.wait_for(provider.search(query), timeout=provider_timeout)
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         has_sync = any(r.has_sync for r in results) if results else False
         logger.info(
             "proveedor %s: %d resultado(s), sync=%s, %d ms",
-            provider.name, len(results), has_sync, elapsed_ms,
+            provider.name,
+            len(results),
+            has_sync,
+            elapsed_ms,
         )
         return results
     except asyncio.TimeoutError:
@@ -353,9 +347,7 @@ async def _search_one(
         return []
     except Exception as exc:
         elapsed_ms = int((time.monotonic() - t0) * 1000)
-        logger.warning(
-            "error en proveedor %s (%d ms): %s", provider.name, elapsed_ms, exc
-        )
+        logger.warning("error en proveedor %s (%d ms): %s", provider.name, elapsed_ms, exc)
         return []
 
 
@@ -392,6 +384,7 @@ async def _search_cascade(
             if audio_path:
                 try:
                     from otterrip_core.audio_fingerprint import compute_fingerprint
+
                     fp = compute_fingerprint(audio_path)
                     if fp:
                         fingerprint = fp
@@ -399,9 +392,7 @@ async def _search_cascade(
                     pass  # Fingerprint is optional
 
         if hasattr(cache, "get_with_fingerprint"):
-            cached = cache.get_with_fingerprint(
-                query.artist, query.title, None, query.isrc, fingerprint
-            )
+            cached = cache.get_with_fingerprint(query.artist, query.title, None, query.isrc, fingerprint)
         else:
             cached = cache.get(query.artist, query.title, None, query.isrc)
         if cached is not None:
@@ -440,8 +431,8 @@ async def _search_cascade(
             continue
 
         # Detect input type: LyricsResult (legacy/test) or LyricsBundle (new).
+        from otterrip_core.lyrics_bundle import LyricsBundle as _LB
         from otterrip_core.models import LyricsResult as _LR
-        from otterrip_core.lyrics_bundle import LyricsBundle as _LB, bundle_from_legacy
 
         are_results = all(isinstance(r, _LR) for r in results)
         are_bundles = all(isinstance(r, _LB) for r in results)
@@ -460,9 +451,7 @@ async def _search_cascade(
                     timed_entries=r.timed_entries,
                     confidence=r.confidence,
                     source=r.provider,
-                    ref_duration_ms=(
-                        int(round(r.duration * 1000)) if r.duration else None
-                    ),
+                    ref_duration_ms=(int(round(r.duration * 1000)) if r.duration else None),
                 )
                 for r in results
             ]
@@ -550,6 +539,7 @@ async def _search_cascade(
                 if audio_path:
                     try:
                         from otterrip_core.audio_fingerprint import compute_fingerprint
+
                         fp = compute_fingerprint(audio_path)
                         if fp:
                             cache_fingerprint = fp
@@ -566,8 +556,10 @@ async def _search_cascade(
             )
         logger.info(
             "letra encontrada: %s - %s | kind=%s | conf=%.2f | source=%s",
-            query.artist, query.title,
-            getattr(best, "kind", "unknown"), getattr(best, "confidence", 0.0),
+            query.artist,
+            query.title,
+            getattr(best, "kind", "unknown"),
+            getattr(best, "confidence", 0.0),
             getattr(best, "source", "?"),
         )
         return best
@@ -578,11 +570,7 @@ async def _search_cascade(
 
 def _normalize_match_text(value: str) -> str:
     decomposed = unicodedata.normalize("NFKD", value).casefold()
-    return "".join(
-        ch
-        for ch in decomposed
-        if not unicodedata.combining(ch) and ch.isalnum()
-    )
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch) and ch.isalnum())
 
 
 def _bundle_matches_query(bundle: LyricsBundle, query: SongQuery) -> bool:
@@ -658,10 +646,7 @@ def _version_suffix_penalty(bundle_title: str, canonical_title: str) -> float:
     # we use a simpler normalization here.
     def _normalize_for_suffix(text: str) -> str:
         decomposed = unicodedata.normalize("NFKD", text).casefold()
-        return "".join(
-            ch for ch in decomposed
-            if not unicodedata.combining(ch) and (ch.isalnum() or ch == " ")
-        )
+        return "".join(ch for ch in decomposed if not unicodedata.combining(ch) and (ch.isalnum() or ch == " "))
 
     bt_lower = _normalize_for_suffix(bundle_title)
     ct_lower = _normalize_for_suffix(canonical_title)
@@ -704,32 +689,30 @@ def _score_bundle(
 
     # Title similarity (40%)
     if HAS_RAPIDFUZZ and canonical_title and bundle.title:
-        title_score = _fuzz.ratio(
-            _normalize_match_text(canonical_title),
-            _normalize_match_text(bundle.title),
-        ) / 100.0
+        title_score = (
+            _fuzz.ratio(
+                _normalize_match_text(canonical_title),
+                _normalize_match_text(bundle.title),
+            )
+            / 100.0
+        )
     elif canonical_title and bundle.title:
         # Fallback: exact normalized match
-        title_score = (
-            1.0
-            if _normalize_match_text(canonical_title) == _normalize_match_text(bundle.title)
-            else 0.0
-        )
+        title_score = 1.0 if _normalize_match_text(canonical_title) == _normalize_match_text(bundle.title) else 0.0
     else:
         title_score = 0.5
 
     # Artist similarity (30%)
     if HAS_RAPIDFUZZ and canonical_artist and bundle.artist:
-        artist_score = _fuzz.ratio(
-            _normalize_match_text(canonical_artist),
-            _normalize_match_text(bundle.artist),
-        ) / 100.0
-    elif canonical_artist and bundle.artist:
         artist_score = (
-            1.0
-            if _normalize_match_text(canonical_artist) == _normalize_match_text(bundle.artist)
-            else 0.0
+            _fuzz.ratio(
+                _normalize_match_text(canonical_artist),
+                _normalize_match_text(bundle.artist),
+            )
+            / 100.0
         )
+    elif canonical_artist and bundle.artist:
+        artist_score = 1.0 if _normalize_match_text(canonical_artist) == _normalize_match_text(bundle.artist) else 0.0
     else:
         artist_score = 0.5
 
@@ -754,12 +737,7 @@ def _score_bundle(
     # version markers (Live, Remix, Acoustic, Cover, etc.)
     version_penalty = _version_suffix_penalty(bundle.title, canonical_title)
 
-    combined = (
-        title_score * 0.40
-        + artist_score * 0.30
-        + duration_score * 0.20
-        + sync_score * 0.10
-    )
+    combined = title_score * 0.40 + artist_score * 0.30 + duration_score * 0.20 + sync_score * 0.10
     combined *= version_penalty
     return round(combined, 4)
 
@@ -784,7 +762,8 @@ def _select_best_bundle(
         return None
 
     candidates = [
-        b for b in bundles
+        b
+        for b in bundles
         if b.confidence >= 0.3
         and _bundle_has_lyrics(b)
         and (not prefer_synced or plain_ok or b.has_sync)
@@ -850,7 +829,6 @@ def select_best(
     Converts LyricsResult objects to LyricsBundle, selects the best,
     and returns the original LyricsResult wrapper for the caller.
     """
-    from otterrip_core.lyrics_bundle import bundle_from_legacy
 
     if not results:
         return None
@@ -867,9 +845,7 @@ def select_best(
             timed_entries=r.timed_entries,
             confidence=r.confidence,
             source=r.provider,
-            ref_duration_ms=(
-                int(round(r.duration * 1000)) if r.duration else None
-            ),
+            ref_duration_ms=(int(round(r.duration * 1000)) if r.duration else None),
         )
         for r in results
     ]
@@ -887,11 +863,7 @@ def select_best(
     best_title = best.title
     best_artist = best.artist
     for r in results:
-        if (
-            r.provider == best_provider
-            and r.title == best_title
-            and r.artist == best_artist
-        ):
+        if r.provider == best_provider and r.title == best_title and r.artist == best_artist:
             return r
     return results[0]
 
@@ -903,6 +875,7 @@ def _bundle_has_lyrics(bundle: LyricsBundle) -> bool:
 
 
 # ─── File collection ─────────────────────────────────────────────
+
 
 def _read_session(session_path: str) -> list[str]:
     files = []
@@ -1009,9 +982,7 @@ async def _process_file(
     # --- Phase 1b: MusicBrainz canonical metadata lookup --------------
     canonical: Optional[CanonicalMetadata] = None
     try:
-        canonical = await lookup_canonical(
-            clean_t, clean_a, clean_alb, timeout=5.0
-        )
+        canonical = await lookup_canonical(clean_t, clean_a, clean_alb, timeout=5.0)
         if canonical:
             # Use canonical metadata to refine the query
             if canonical.title:
@@ -1054,9 +1025,7 @@ async def _process_file(
 
     # Confidence gate: skip if below threshold
     if min_confidence > 0 and best.confidence < min_confidence:
-        print(
-            f"  ⚠ {fpath.name} — confianza {best.confidence:.2f} < {min_confidence:.2f}, omitida"
-        )
+        print(f"  ⚠ {fpath.name} — confianza {best.confidence:.2f} < {min_confidence:.2f}, omitida")
         best.warnings.append(f"confianza {best.confidence:.2f} < mínimo {min_confidence:.2f}")
         return "notfound"
 
@@ -1065,22 +1034,15 @@ async def _process_file(
     if auto_align and best.has_sync and best.lines:
         from otterrip_core.align import auto_align_bundle
 
-        applied_ms, align_conf, align_note = auto_align_bundle(
-            best, str(fpath), audio_duration_s=duration
-        )
+        applied_ms, align_conf, align_note = auto_align_bundle(best, str(fpath), audio_duration_s=duration)
         if align_note:
             if align_note not in _ALIGN_NOTE_SEEN:
                 _ALIGN_NOTE_SEEN.add(align_note)
                 print(f"    · {align_note}")
-            _ALIGN_NOTE_COUNTS[align_note] = (
-                _ALIGN_NOTE_COUNTS.get(align_note, 0) + 1
-            )
+            _ALIGN_NOTE_COUNTS[align_note] = _ALIGN_NOTE_COUNTS.get(align_note, 0) + 1
         if applied_ms:
             auto_align_applied = True
-            print(
-                f"    · Alineación automática: {applied_ms:+d} ms "
-                f"(conf {align_conf:.2f})"
-            )
+            print(f"    · Alineación automática: {applied_ms:+d} ms (conf {align_conf:.2f})")
 
         # --- Global offset detection (fallback if cross-correlation
         #     didn't find a significant shift) -------------------------
@@ -1089,49 +1051,54 @@ async def _process_file(
                 apply_global_offset_to_bundle as detect_and_apply_global_offset,
             )
 
-            global_offset_ms, global_note = detect_and_apply_global_offset(
-                best, str(fpath)
-            )
+            global_offset_ms, global_note = detect_and_apply_global_offset(best, str(fpath))
             if global_offset_ms:
                 auto_align_applied = True
-                print(
-                    f"    · Offset global detectado: {global_offset_ms:+d} ms"
-                )
-                best.warnings.append(
-                    f"offset global automático: {global_note}"
-                )
+                print(f"    · Offset global detectado: {global_offset_ms:+d} ms")
+                best.warnings.append(f"offset global automático: {global_note}")
             elif global_note and global_note not in _ALIGN_NOTE_SEEN:
                 _ALIGN_NOTE_SEEN.add(global_note)
-                _ALIGN_NOTE_COUNTS[global_note] = (
-                    _ALIGN_NOTE_COUNTS.get(global_note, 0) + 1
-                )
+                _ALIGN_NOTE_COUNTS[global_note] = _ALIGN_NOTE_COUNTS.get(global_note, 0) + 1
 
     # --- Forced line-by-line alignment to audio onsets -----------------
     if force_align and best.has_sync and best.lines:
         from otterrip_core.aligner import align_bundle as forced_align_bundle
 
-        align_report = forced_align_bundle(
-            best, str(fpath), offset_ms=offset_ms
-        )
+        align_report = forced_align_bundle(best, str(fpath), offset_ms=offset_ms)
         if align_report.note:
             if align_report.lines_moved > 0:
-                print(
-                    f"    · Alineación forzada: {align_report.note}"
-                )
-                best.warnings.append(
-                    f"alineación forzada: {align_report.note}"
-                )
+                print(f"    · Alineación forzada: {align_report.note}")
+                best.warnings.append(f"alineación forzada: {align_report.note}")
             else:
                 if align_report.note not in _ALIGN_NOTE_SEEN:
                     _ALIGN_NOTE_SEEN.add(align_report.note)
                     print(f"    · {align_report.note}")
-                _ALIGN_NOTE_COUNTS[align_report.note] = (
-                    _ALIGN_NOTE_COUNTS.get(align_report.note, 0) + 1
-                )
+                _ALIGN_NOTE_COUNTS[align_report.note] = _ALIGN_NOTE_COUNTS.get(align_report.note, 0) + 1
+
+    # --- Word-level alignment (sync_level="word") -----------------------
+    if sync_level == "word" and best.lrc and best.lines:
+        from otterrip_core.enhanced_lrc import (
+            align_words_in_place,
+            parse_enhanced_lrc,
+            serialize_enhanced_lrc,
+        )
+
+        elrc = parse_enhanced_lrc(best.lrc)
+        word_notes, word_report = align_words_in_place(elrc, str(fpath))
+        for note in word_notes:
+            print(f"    · {note}")
+        if word_report and word_report.lines_done:
+            best.lrc = serialize_enhanced_lrc(elrc)
+            best.lines = [
+                (el.line_ms, el.raw_text or " ".join(w.text for w in el.words))
+                for el in elrc.lines
+            ]
+            best.kind = "word"
 
     # Apply stored offset override (from interactive adjustment)
     try:
         from otterrip_core.lyrics_overrides import OverridesStore
+
         override_store = OverridesStore()
         stored_offset = override_store.get_offset(str(fpath))
         if stored_offset != 0 and best.lines:
@@ -1140,6 +1107,7 @@ async def _process_file(
             best.offset_ms += stored_offset
             if best.lrc:
                 from otterrip_core.lrc_validator import shift_lrc
+
                 best.lrc = shift_lrc(best.lrc, stored_offset)
             print(f"    · Offset guardado aplicado: {stored_offset:+d} ms")
     except Exception:
@@ -1148,19 +1116,16 @@ async def _process_file(
     # Apply manual offset if requested (skip if auto-align or force_align
     # already applied an offset)
     if offset_ms != 0 and best.lines and not force_align and not auto_align_applied:
-        from otterrip_core.offset import apply_offset_to_bundle
         best.lines = [(max(0, ms + offset_ms), txt) for ms, txt in best.lines]
         best.lines.sort(key=lambda x: x[0])
         best.offset_ms += offset_ms
         if best.lrc:
             from otterrip_core.lrc_validator import shift_lrc
+
             best.lrc = shift_lrc(best.lrc, offset_ms)
 
     # Log decision.
-    print(
-        f"  ✔ {fpath.name} — letra {best.kind} "
-        f"(conf={best.confidence:.2f}, origen={best.source})"
-    )
+    print(f"  ✔ {fpath.name} — letra {best.kind} (conf={best.confidence:.2f}, origen={best.source})")
     if best.warnings:
         for w in best.warnings:
             print(f"    ⚠ {w}")
@@ -1249,6 +1214,7 @@ def _write_summary(path: str, found: int, notfound: int, already: int) -> None:
 
 # ─── Main entry point ────────────────────────────────────────────
 
+
 def run_lyrics(args) -> int:
     """Main lyrics command handler."""
     target = args.target
@@ -1290,9 +1256,7 @@ def run_lyrics(args) -> int:
         stats[provider.name] = {"queries": 0, "found": 0, "errors": 0}
 
     # Local cache (artist + title + duration).
-    cache_dir = getattr(args, "cache_dir", "") or str(
-        Path.home() / ".cache" / "otterrip" / "lyrics"
-    )
+    cache_dir = getattr(args, "cache_dir", "") or str(Path.home() / ".cache" / "otterrip" / "lyrics")
     cache = LyricsCache(cache_dir)
 
     async def process_file(fpath: Path) -> str:
@@ -1343,9 +1307,7 @@ def run_lyrics(args) -> int:
     if _ALIGN_NOTE_COUNTS:
         print()
         print("  Auto-corrección de letras (resumen):")
-        for note, n in sorted(
-            _ALIGN_NOTE_COUNTS.items(), key=lambda kv: (-kv[1], kv[0])
-        ):
+        for note, n in sorted(_ALIGN_NOTE_COUNTS.items(), key=lambda kv: (-kv[1], kv[0])):
             print(f"    {note}: {n} pista(s)")
 
     print()
@@ -1357,6 +1319,7 @@ def run_lyrics(args) -> int:
 
 
 # ─── Concurrent file processing (kept from original) ─────────────
+
 
 async def _process_files_concurrently(
     files: list[Path],

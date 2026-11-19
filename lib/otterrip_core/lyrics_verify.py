@@ -9,6 +9,7 @@ Implements the Parte 2 contract:
 
 Reuses: lrc_validator, lyrics_bundle, offset.
 """
+
 from __future__ import annotations
 
 import os
@@ -16,26 +17,26 @@ import re
 import shutil
 import sys
 import tempfile
-from pathlib import Path
 from dataclasses import dataclass, field
+from pathlib import Path
 
 try:
     import mutagen
-    from mutagen.mp3 import MP3
     from mutagen.flac import FLAC
+    from mutagen.id3 import ID3, SYLT, TXXX, USLT, ID3NoHeaderError
+    from mutagen.mp3 import MP3
     from mutagen.mp4 import MP4
-    from mutagen.id3 import ID3, USLT, SYLT, TXXX, ID3NoHeaderError
+
     HAS_MUTAGEN = True
 except ImportError:
     HAS_MUTAGEN = False
 
 from otterrip_core.lrc_validator import (
+    normalise_lrc,
     parse_lrc,
     validate_and_normalise_lrc,
-    normalise_lrc,
 )
 from otterrip_core.offset import apply_offset_to_bundle as _shift_lrc_text
-
 
 # ── Constants ──────────────────────────────────────────────────────
 
@@ -46,20 +47,23 @@ ITUNES_SYNCED_ATOM = "----:com.apple.iTunes:LYRICS"
 
 # ── Data classes ───────────────────────────────────────────────────
 
+
 @dataclass
 class TrackVerdict:
     """Result of verifying one audio file."""
+
     file: str
-    status: str          # "OK" | "WARN" | "FAIL"
+    status: str  # "OK" | "WARN" | "FAIL"
     has_embedded: bool = False
     has_sidecar: bool = False
     has_synced: bool = False
     has_plain: bool = False
-    kind: str = "none"   # "synced" | "plain" | "none"
+    kind: str = "none"  # "synced" | "plain" | "none"
     issues: list[str] = field(default_factory=list)
 
 
 # ── Audio I/O helpers ─────────────────────────────────────────────
+
 
 def _open_audio(filepath: str):
     """Open an audio file with mutagen. Returns None on failure."""
@@ -157,6 +161,7 @@ def _get_duration(audio) -> float | None:
 
 # ── VERIFY ─────────────────────────────────────────────────────────
 
+
 def verify_track(filepath: Path) -> TrackVerdict:
     """Read-only audit of one audio file's lyrics state."""
     v = TrackVerdict(file=str(filepath), status="OK")
@@ -190,9 +195,7 @@ def verify_track(filepath: Path) -> TrackVerdict:
             v.has_embedded = True
             v.has_synced = True
             # Validate synced content
-            result = validate_and_normalise_lrc(
-                synced, audio_duration_s=_get_duration(audio)
-            )
+            result = validate_and_normalise_lrc(synced, audio_duration_s=_get_duration(audio))
             if not result.valid:
                 v.issues.append(f"tag SYLT/LYRICS inválido: {result.reason}")
                 if v.status == "OK":
@@ -238,10 +241,7 @@ def run_lyrics_verify(args) -> int:
         print(f"Ruta no encontrada: {args.path}", file=sys.stderr)
         return 1
 
-    files = sorted(
-        f for f in target.rglob("*")
-        if f.is_file() and f.suffix.lower() in AUDIO_EXTS
-    )
+    files = sorted(f for f in target.rglob("*") if f.is_file() and f.suffix.lower() in AUDIO_EXTS)
     if not files:
         print("No se encontraron archivos de audio.")
         return 0
@@ -292,7 +292,7 @@ def run_lyrics_verify(args) -> int:
     print(f"  WARN:  {warn_count}")
     print(f"  FAIL:  {fail_count}")
     print()
-    print(f"  ── Contadores ──")
+    print("  ── Contadores ──")
     print(f"  Letra sincronizada (SYLT/LRC): {synced_count}")
     print(f"  Letra plana (USLT sin ts):     {plain_count}")
     print(f"  Sin letra:                     {none_count}")
@@ -302,6 +302,7 @@ def run_lyrics_verify(args) -> int:
 
 
 # ── REPAIR ─────────────────────────────────────────────────────────
+
 
 def _embed_synced_lyrics(audio, lrc_text: str, lang: str = "eng") -> bool:
     """Embed synced lyrics into an audio file. Returns True on success."""
@@ -319,9 +320,7 @@ def _embed_synced_lyrics(audio, lrc_text: str, lang: str = "eng") -> bool:
             audio.tags.delall("SYLT:")
             audio.tags.delall("TXXX:LYRICS")
             # SYLT
-            synced_parts = [
-                (txt, ms) for ms, txt in entries if txt.strip()
-            ]
+            synced_parts = [(txt, ms) for ms, txt in entries if txt.strip()]
             if synced_parts:
                 audio.tags.add(
                     SYLT(
@@ -335,14 +334,10 @@ def _embed_synced_lyrics(audio, lrc_text: str, lang: str = "eng") -> bool:
             # TXXX:LYRICS with LRC format — PowerAmp reads synced lyrics from here
             normalised = normalise_lrc(entries)
             if normalised:
-                audio.tags.add(
-                    TXXX(encoding=3, desc="LYRICS", text=normalised)
-                )
+                audio.tags.add(TXXX(encoding=3, desc="LYRICS", text=normalised))
             # USLT (plain)
             if plain_lines:
-                audio.tags.add(
-                    USLT(encoding=3, lang=lang, text=plain_lines)
-                )
+                audio.tags.add(USLT(encoding=3, lang=lang, text=plain_lines))
 
         elif isinstance(audio, FLAC):
             normalised = normalise_lrc(entries)
@@ -385,10 +380,22 @@ def _embed_plain_lyrics(audio, text: str, lang: str = "eng") -> bool:
 def _lang_iso3(lang: str) -> str:
     """Convert a 2-letter ISO 639-1 code to 3-letter ISO 639-2 for ID3."""
     mapping = {
-        "en": "eng", "es": "spa", "pt": "por", "fr": "fre",
-        "de": "ger", "it": "ita", "ja": "jpn", "ko": "kor",
-        "zh": "chi", "ru": "rus", "ar": "ara", "nl": "dut",
-        "pl": "pol", "sv": "swe", "tr": "tur", "he": "heb",
+        "en": "eng",
+        "es": "spa",
+        "pt": "por",
+        "fr": "fre",
+        "de": "ger",
+        "it": "ita",
+        "ja": "jpn",
+        "ko": "kor",
+        "zh": "chi",
+        "ru": "rus",
+        "ar": "ara",
+        "nl": "dut",
+        "pl": "pol",
+        "sv": "swe",
+        "tr": "tur",
+        "he": "heb",
     }
     if not lang:
         return "eng"
@@ -411,7 +418,8 @@ def repair_track(
 
     if audio is None:
         return TrackVerdict(
-            file=str(filepath), status="FAIL",
+            file=str(filepath),
+            status="FAIL",
             issues=["no se pudo abrir el archivo"],
         )
 
@@ -432,7 +440,8 @@ def repair_track(
         shutil.copy2(str(filepath), str(bak))
     except Exception:
         return TrackVerdict(
-            file=str(filepath), status="FAIL",
+            file=str(filepath),
+            status="FAIL",
             issues=["no se pudo crear backup"],
         )
 
@@ -491,10 +500,7 @@ def run_lyrics_repair(args) -> int:
         print(f"Ruta no encontrada: {args.path}", file=sys.stderr)
         return 1
 
-    files = sorted(
-        f for f in target.rglob("*")
-        if f.is_file() and f.suffix.lower() in AUDIO_EXTS
-    )
+    files = sorted(f for f in target.rglob("*") if f.is_file() and f.suffix.lower() in AUDIO_EXTS)
     if not files:
         print("No se encontraron archivos de audio.")
         return 0
@@ -542,7 +548,7 @@ def run_lyrics_repair(args) -> int:
     print(f"  WARN:  {warn_count}")
     print(f"  FAIL:  {fail_count}")
     print()
-    print(f"  ── Contadores ──")
+    print("  ── Contadores ──")
     print(f"  Letra sincronizada (SYLT/LRC): {synced_count}")
     print(f"  Letra plana (USLT sin ts):     {plain_count}")
     print(f"  Sin letra:                     {none_count}")
@@ -552,6 +558,7 @@ def run_lyrics_repair(args) -> int:
 
 
 # ── SHIFT (enhanced: tag + sidecar) ────────────────────────────────
+
 
 def run_lyrics_shift(args) -> int:
     """lyrics shift <file> <ms> — adjust offset on tag AND sidecar."""
@@ -637,6 +644,7 @@ def run_lyrics_shift(args) -> int:
 
 
 # ── Dispatcher ─────────────────────────────────────────────────────
+
 
 def run_lyrics_manage(args) -> int:
     """Dispatch lyrics-manage subcommands (verify / repair / shift)."""

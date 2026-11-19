@@ -8,6 +8,7 @@ heuristics when the network call fails or times out.
 This is the single source of truth for URL classification.  The Bash
 launcher delegates to this module instead of duplicating the logic.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -18,8 +19,8 @@ import subprocess
 import sys
 from typing import Any, Dict, Optional
 
-
 # ── Data types ─────────────────────────────────────────────────────
+
 
 class DetectionResult:
     """Structured result of a URL classification."""
@@ -33,10 +34,10 @@ class DetectionResult:
         title: str = "",
         source: str = "unknown",
     ) -> None:
-        self.kind = kind       # "song" | "playlist" | "album"
-        self.count = count     # number of entries (None for songs / unknown)
+        self.kind = kind  # "song" | "playlist" | "album"
+        self.count = count  # number of entries (None for songs / unknown)
         self.title = title
-        self.source = source   # "yt-dlp" | "fallback" | "error"
+        self.source = source  # "yt-dlp" | "fallback" | "error"
 
     def to_output(self) -> str:
         """Return the 4-line format expected by the Bash launcher."""
@@ -48,13 +49,12 @@ class DetectionResult:
 
 # ── URL pattern heuristics (fallback only) ─────────────────────────
 
+
 def _url_hint(url: str, no_playlist: bool = False) -> str:
     """Very coarse hint from URL structure — used ONLY as fallback."""
     u = url.lower()
     album = any(seg in u for seg in ("/album/", "/albums/", "olak5uy_"))
-    collection = any(
-        seg in u for seg in ("/playlist", "/sets/", "/album/", "/albums/", "list=")
-    )
+    collection = any(seg in u for seg in ("/playlist", "/sets/", "/album/", "/albums/", "list="))
     if no_playlist and "/watch" in u:
         collection = False
     if album:
@@ -96,14 +96,19 @@ def _build_args(
         cmd = [sys.executable, "-m", "yt_dlp"]
 
     args: list[str] = list(cmd)
-    args.extend([
-        "--playlist-items", "1",
-        "--skip-download",
-        "--no-warnings",
-        "--ignore-errors",
-        "--socket-timeout", "20",
-        "--print", _TEMPLATE,
-    ])
+    args.extend(
+        [
+            "--playlist-items",
+            "1",
+            "--skip-download",
+            "--no-warnings",
+            "--ignore-errors",
+            "--socket-timeout",
+            "20",
+            "--print",
+            _TEMPLATE,
+        ]
+    )
 
     if flat:
         args.insert(len(cmd), "--flat-playlist")
@@ -150,8 +155,13 @@ def _query_ytdlp(
     """Run yt-dlp and return a dict of field values, or None on failure."""
     for flat in (True, False):
         args = _build_args(
-            url, ytdlp_bin, js_args, cookies_file, cookies_browser,
-            no_playlist, flat,
+            url,
+            ytdlp_bin,
+            js_args,
+            cookies_file,
+            cookies_browser,
+            no_playlist,
+            flat,
         )
         try:
             proc = subprocess.run(
@@ -177,6 +187,7 @@ def _query_ytdlp(
 
 
 # ── Classification logic ───────────────────────────────────────────
+
 
 def classify_url(
     url: str,
@@ -216,8 +227,13 @@ def classify_url(
 
     # ── Fast path: query yt-dlp ──────────────────────────────────
     fields = _query_ytdlp(
-        url, ytdlp_bin, js_args, cookies_file, cookies_browser,
-        no_playlist, timeout,
+        url,
+        ytdlp_bin,
+        js_args,
+        cookies_file,
+        cookies_browser,
+        no_playlist,
+        timeout,
     )
 
     if fields is None:
@@ -239,9 +255,7 @@ def classify_url(
     page_l = (page or "").lower()
 
     # Is this a pure collection URL (playlist/album page, not /watch)?
-    pure_collection = any(
-        seg in url_l for seg in ("/playlist", "/sets/", "/album/", "/albums/")
-    )
+    pure_collection = any(seg in url_l for seg in ("/playlist", "/sets/", "/album/", "/albums/"))
 
     # Collection if yt-dlp reports playlist metadata or >1 entries
     collection = bool(ptitle or pid) or count > 1 or pure_collection
@@ -278,6 +292,7 @@ def classify_url(
 
 # ── CLI entry-point ────────────────────────────────────────────────
 
+
 def run_detect_url(args) -> int:
     """Handler for ``python -m otterrip_core detect-url``."""
     url = getattr(args, "url", "")
@@ -311,20 +326,15 @@ def main() -> int:
     )
     parser.add_argument("--url", required=True, help="URL to classify")
     parser.add_argument("--ytdlp", default="", help="Path to yt-dlp binary")
-    parser.add_argument(
-        "--js-args", default="", help="Space-separated JS runtime args"
-    )
+    parser.add_argument("--js-args", default="", help="Space-separated JS runtime args")
     parser.add_argument("--cookies-file", default="", help="Netrc/cookies file")
+    parser.add_argument("--cookies-browser", default="", help="Browser name for cookies")
     parser.add_argument(
-        "--cookies-browser", default="", help="Browser name for cookies"
-    )
-    parser.add_argument(
-        "--no-playlist", action="store_true",
+        "--no-playlist",
+        action="store_true",
         help="Treat /watch?...&list=... as a single song",
     )
-    parser.add_argument(
-        "--timeout", type=int, default=50, help="Timeout in seconds for yt-dlp"
-    )
+    parser.add_argument("--timeout", type=int, default=50, help="Timeout in seconds for yt-dlp")
 
     args = parser.parse_args()
     js_args = [a for a in args.js_args.split() if a] if args.js_args else []

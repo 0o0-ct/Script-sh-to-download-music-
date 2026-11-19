@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Merge session files (merge-sessions command)."""
+
 from __future__ import annotations
 
 import glob

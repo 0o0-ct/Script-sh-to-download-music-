@@ -11,13 +11,12 @@ Orchestrates a complete metadata enrichment pipeline:
 Usage:
     py_core post-process <target> [--keep-thumbnail] [--session]
 """
+
 from __future__ import annotations
 
 import json
 import logging
-import os
 from pathlib import Path
-from typing import List, Optional
 
 logger = logging.getLogger("otterrip_core.post_process")
 
@@ -31,10 +30,7 @@ def _find_audio_files(target: Path) -> list[Path]:
             return [target]
         return []
     if target.is_dir():
-        return sorted(
-            f for f in target.rglob("*")
-            if f.is_file() and f.suffix.lower() in AUDIO_EXTS
-        )
+        return sorted(f for f in target.rglob("*") if f.is_file() and f.suffix.lower() in AUDIO_EXTS)
     return []
 
 
@@ -67,6 +63,7 @@ def _get_tags(filepath: Path) -> dict:
     """Read existing tags from an audio file using mutagen."""
     try:
         import mutagen
+
         audio = mutagen.File(str(filepath))
         if audio is None:
             return {}
@@ -138,6 +135,7 @@ def post_process_single(
     if title.strip() and artist.strip():
         try:
             from otterrip_core.musicbrainz import lookup_canonical_sync
+
             mb_meta = lookup_canonical_sync(title.strip(), artist.strip(), album.strip() if album else "")
             if mb_meta:
                 result["mb_lookup"] = True
@@ -152,6 +150,7 @@ def post_process_single(
     # Step 3: Fix metadata
     try:
         from otterrip_core import fix_metadata
+
         use_title = mb_meta.title if mb_meta and mb_meta.title else title.strip()
         use_artist = mb_meta.artist if mb_meta and mb_meta.artist else artist.strip()
         use_album = mb_meta.album if mb_meta and mb_meta.album else (album.strip() if album else "")
@@ -171,6 +170,7 @@ def post_process_single(
     if not keep_thumbnail and mb_meta and mb_meta.release_id:
         try:
             from otterrip_core import cover_art
+
             cover_data = cover_art.fetch_and_cache_cover(mb_meta.release_id, size="250")
             if cover_data:
                 cover_art.embed_cover(filepath, cover_data)
@@ -184,11 +184,13 @@ def post_process_single(
     if lyrics:
         try:
             from otterrip_core import lyrics as lyrics_module
+
             search_title = mb_meta.title if mb_meta and mb_meta.title else title.strip()
             search_artist = mb_meta.artist if mb_meta and mb_meta.artist else artist.strip()
             duration = None
             try:
                 import mutagen
+
                 audio = mutagen.File(str(filepath))
                 if audio and hasattr(audio, "info") and audio.info:
                     duration = audio.info.length

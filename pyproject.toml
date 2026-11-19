@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "otterrip-core"
-version = "7.9.0"
+version = "8.0.0"
 dependencies = ["mutagen", "yt-dlp", "typer", "rich"]
 
 [project.optional-dependencies]
@@ -18,3 +18,22 @@ otterrip = "otterrip_core.cli:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["lib"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501", "E741", "F401", "F811", "F841", "F541"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"__main__.py" = ["E402"]
+
+[tool.mypy]
+ignore_missing_imports = true
+python_version = "3.10"
+disallow_untyped_defs = false
+no_strict_optional = true

@@ -4,12 +4,10 @@
 Delegates all operations to StateDB (SQLite backend) while maintaining
 the same CLI API for backward compatibility.
 """
+
 from __future__ import annotations
 
 import os
-import signal
-import time
-from pathlib import Path
 
 from otterrip_core.state_db import StateDB
 
@@ -157,5 +155,7 @@ def run_queue(args) -> int:
         return 1
 
     # No subcommand
-    print("Usage: queue {recover|claim|get|finish|add|list|stats|rm|clear|pause|resume|cancel|retry|clear-done|renew-lease}")
+    print(
+        "Usage: queue {recover|claim|get|finish|add|list|stats|rm|clear|pause|resume|cancel|retry|clear-done|renew-lease}"
+    )
     return 1

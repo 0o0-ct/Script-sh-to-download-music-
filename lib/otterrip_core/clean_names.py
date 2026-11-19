@@ -15,6 +15,7 @@ the desired final name).  Only a repeated artist prefix (``Artista -
 Artista - Canción``, from YouTube Music) is removed — that happens inside
 ``clean_title``.
 """
+
 from __future__ import annotations
 
 import json

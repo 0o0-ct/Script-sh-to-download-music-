@@ -11,10 +11,10 @@ Usage:
     cover = get_cached_cover(release_id)
     embed_cover(audio_file, cover_data)
 """
+
 from __future__ import annotations
 
 import base64
-import io
 import logging
 import os
 import time
@@ -54,8 +54,8 @@ def fetch_cover_art(
     logger.debug("Fetching cover art from %s", url)
 
     try:
-        import urllib.request
         import urllib.error
+        import urllib.request
 
         req = urllib.request.Request(url)
         req.add_header("User-Agent", "OtterRip/7.5.0")
@@ -67,7 +67,9 @@ def fetch_cover_art(
                 return None
             logger.info(
                 "Downloaded cover art for %s (%d bytes, size=%s)",
-                release_id, len(data), size,
+                release_id,
+                len(data),
+                size,
             )
             return data
 
@@ -94,6 +96,7 @@ def cache_cover_art(release_id: str, data: bytes) -> bool:
     """
     try:
         from otterrip_core.state_db import StateDB
+
         state_dir = os.environ.get("OTTERRIP_STATE_DIR", "")
         if not state_dir:
             logger.debug("OTTERRIP_STATE_DIR not set, skipping cache")
@@ -130,6 +133,7 @@ def get_cached_cover(release_id: str) -> Optional[bytes]:
     """
     try:
         from otterrip_core.state_db import StateDB
+
         state_dir = os.environ.get("OTTERRIP_STATE_DIR", "")
         if not state_dir:
             return None
@@ -172,11 +176,12 @@ def embed_cover(audio_path: str | Path, cover_data: bytes) -> bool:
         return False
 
     try:
-        from mutagen.mp3 import MP3
-        from mutagen.id3 import ID3, APIC, error as id3_error
-        from mutagen.flac import FLAC
-        from mutagen.mp4 import MP4
         from mutagen.easymp4 import EasyMP4
+        from mutagen.flac import FLAC
+        from mutagen.id3 import APIC, ID3
+        from mutagen.id3 import error as id3_error
+        from mutagen.mp3 import MP3
+        from mutagen.mp4 import MP4
 
         ext = path.suffix.lower()
 
@@ -218,9 +223,7 @@ def embed_cover(audio_path: str | Path, cover_data: bytes) -> bool:
             for tag in list(audio.pictures):
                 audio.delete_pictures()
                 break
-            audio.add_picture(
-                _make_picture(cover_data)
-            )
+            audio.add_picture(_make_picture(cover_data))
             audio.save()
 
         elif ext in (".m4a", ".m4p"):
@@ -247,6 +250,7 @@ def _make_picture(data: bytes):
     """Create a mutagen FLAC picture from raw image data."""
     try:
         from mutagen.flac import Picture
+
         pic = Picture()
         pic.type = 3  # Cover
         pic.desc = "Cover"

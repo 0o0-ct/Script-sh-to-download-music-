@@ -5,6 +5,7 @@ Defines the contract between provider adapters, the cascade selector,
 and the tag/file writers (Part 2).  All fields are populated by the
 caller; helpers are provided for common transformations.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -84,21 +85,13 @@ class LyricsBundle:
         """First token of source (e.g. \"lrclib\")."""
         return self.source.split(" | ")[0] if self.source else ""
 
-
-
     @property
     def duration(self) -> float | None:
-        return (
-            self.audio_duration_ms / 1000.0
-            if self.audio_duration_ms is not None
-            else None
-        )
+        return self.audio_duration_ms / 1000.0 if self.audio_duration_ms is not None else None
 
     @property
     def sync_level(self) -> int:
-        return {"word": 2, "line": 1, "plain": 0, "instrumental": 0, "none": 0}.get(
-            self.kind, 0
-        )
+        return {"word": 2, "line": 1, "plain": 0, "instrumental": 0, "none": 0}.get(self.kind, 0)
 
     @property
     def plain_text(self) -> str:
@@ -143,19 +136,11 @@ class LyricsBundle:
             "title": "",
             "artist": "",
             "album": "",
-            "duration": (
-                self.audio_duration_ms / 1000.0
-                if self.audio_duration_ms is not None
-                else None
-            ),
-            "sync_level": (
-                2 if self.kind == "word" else 1 if self.kind == "line" else 0
-            ),
+            "duration": (self.audio_duration_ms / 1000.0 if self.audio_duration_ms is not None else None),
+            "sync_level": (2 if self.kind == "word" else 1 if self.kind == "line" else 0),
             "has_sync": self.has_sync,
             "plain_text": self.plain or "",
-            "timed_entries": [
-                (ms / 1000.0, txt) for ms, txt in self.lines
-            ],
+            "timed_entries": [(ms / 1000.0, txt) for ms, txt in self.lines],
             "confidence": self.confidence,
             "warnings": list(self.warnings),
         }
@@ -187,16 +172,13 @@ def bundle_from_legacy(
     }
     kind = kind_map.get(sync_level, "plain")
 
-    lines_ms: list[tuple[int, str]] = [
-        (int(round(ts * 1000)), txt) for ts, txt in timed_entries
-    ]
+    lines_ms: list[tuple[int, str]] = [(int(round(ts * 1000)), txt) for ts, txt in timed_entries]
     lines_ms.sort(key=lambda x: x[0])
 
     lrc: Optional[str] = None
     if kind in ("line", "word") and lines_ms:
         lrc_lines = [
-            f"[{ms // 60000:02d}:{(ms % 60000) // 1000:02d}.{(ms % 1000) // 10:02d}] {txt}"
-            for ms, txt in lines_ms
+            f"[{ms // 60000:02d}:{(ms % 60000) // 1000:02d}.{(ms % 1000) // 10:02d}] {txt}" for ms, txt in lines_ms
         ]
         lrc = "\n".join(lrc_lines)
 
@@ -217,9 +199,7 @@ def bundle_from_legacy(
         title=title,
         artist=artist,
         album=album,
-        audio_duration_ms=(
-            int(round(duration_s * 1000)) if duration_s is not None else None
-        ),
+        audio_duration_ms=(int(round(duration_s * 1000)) if duration_s is not None else None),
         ref_duration_ms=ref_duration_ms,
         confidence=max(0.0, min(1.0, confidence)),
         warnings=warnings or [],

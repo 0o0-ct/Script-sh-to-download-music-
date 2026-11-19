@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Base provider adapter interface."""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from otterrip_core.models import LyricsResult, SyncLevel
@@ -12,6 +13,7 @@ from otterrip_core.models import LyricsResult, SyncLevel
 @dataclass
 class SongQuery:
     """Parameters for searching lyrics."""
+
     title: str
     artist: str
     album: str = ""

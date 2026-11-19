@@ -4,6 +4,7 @@
 Adds exponential backoff retries for transient failures so that a temporary
 network glitch on one source does not skip the rest of the chain.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -11,10 +12,10 @@ import importlib.util
 import logging
 from typing import Optional
 
-from otterrip_core.lyrics_bundle import LyricsBundle
-from otterrip_core.lrc_validator import validate_and_normalise_lrc, normalise_lrc
-from otterrip_core.query_clean import build_query_terms
 from otterrip_core.adapters.base import BaseProvider, SongQuery
+from otterrip_core.lrc_validator import normalise_lrc, validate_and_normalise_lrc
+from otterrip_core.lyrics_bundle import LyricsBundle
+from otterrip_core.query_clean import build_query_terms
 
 logger = logging.getLogger("otterrip_core.multiweb")
 
@@ -59,16 +60,21 @@ class MultiwebProvider(BaseProvider):
                 return text
             except Exception as exc:
                 if attempt < self.MAX_RETRIES - 1:
-                    wait = self.BACKOFF_BASE * (2 ** attempt)
+                    wait = self.BACKOFF_BASE * (2**attempt)
                     logger.debug(
                         "multiweb %s attempt %d failed (%s), retrying in %.1fs",
-                        source, attempt + 1, exc, wait,
+                        source,
+                        attempt + 1,
+                        exc,
+                        wait,
                     )
                     await asyncio.sleep(wait)
                 else:
                     logger.warning(
                         "multiweb %s failed after %d attempts: %s",
-                        source, self.MAX_RETRIES, exc,
+                        source,
+                        self.MAX_RETRIES,
+                        exc,
                     )
         return None
 
@@ -98,40 +104,36 @@ class MultiwebProvider(BaseProvider):
                 continue
 
             # Validate any LRC content found.
-            validation = validate_and_normalise_lrc(
-                text, audio_duration_s=query.duration
-            )
+            validation = validate_and_normalise_lrc(text, audio_duration_s=query.duration)
 
             if validation.valid and validation.entries:
-                bundles.append(LyricsBundle(
-                    kind="line",
-                    lrc=normalise_lrc(validation.entries),
-                    plain=validation.plain,
-                    lines=validation.entries,
-                    source=f"multiweb | {source} | {search_term}",
-                    audio_duration_ms=(
-                        int(round(query.duration * 1000))
-                        if query.duration is not None else None
-                    ),
-                    confidence=0.75,
-                    warnings=validation.warnings,
-                ))
+                bundles.append(
+                    LyricsBundle(
+                        kind="line",
+                        lrc=normalise_lrc(validation.entries),
+                        plain=validation.plain,
+                        lines=validation.entries,
+                        source=f"multiweb | {source} | {search_term}",
+                        audio_duration_ms=(int(round(query.duration * 1000)) if query.duration is not None else None),
+                        confidence=0.75,
+                        warnings=validation.warnings,
+                    )
+                )
                 # Return best (first valid synced) — don't keep searching.
                 break
 
             # If synced-only was requested and this source has no valid sync,
             # try plain as fallback (only if plain_ok).
             if not query.prefer_synced and text.strip():
-                bundles.append(LyricsBundle(
-                    kind="plain",
-                    plain=text.strip(),
-                    source=f"multiweb | {source} | {search_term}",
-                    audio_duration_ms=(
-                        int(round(query.duration * 1000))
-                        if query.duration is not None else None
-                    ),
-                    confidence=0.5,
-                ))
+                bundles.append(
+                    LyricsBundle(
+                        kind="plain",
+                        plain=text.strip(),
+                        source=f"multiweb | {source} | {search_term}",
+                        audio_duration_ms=(int(round(query.duration * 1000)) if query.duration is not None else None),
+                        confidence=0.5,
+                    )
+                )
                 break
 
         # Sort: synced > plain.
@@ -141,4 +143,5 @@ class MultiwebProvider(BaseProvider):
     @classmethod
     def max_sync_level(cls):
         from otterrip_core.models import SyncLevel
+
         return SyncLevel.LINES

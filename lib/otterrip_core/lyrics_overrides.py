@@ -26,6 +26,7 @@ Usage from CLI:
     python -m otterrip_core lyrics-overrides set /path/to/audio.mp3 --offset 1240
     python -m otterrip_core lyrics-overrides interactive /path/to/audio.mp3
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -117,6 +118,7 @@ class OverridesStore:
     def set_provider(self, filepath: str, provider: str, lrc_hash: str = "") -> None:
         """Set the provider selection for a file."""
         import datetime
+
         key = _normalize_path(filepath)
         if key not in self._data:
             self._data[key] = {}
@@ -137,13 +139,15 @@ class OverridesStore:
         """List all stored overrides."""
         results = []
         for filepath, overrides in self._data.items():
-            results.append({
-                "file": filepath,
-                "offset_ms": overrides.get("offset_ms", 0),
-                "provider": overrides.get("provider"),
-                "lrc_hash": overrides.get("lrc_hash", ""),
-                "selected_at": overrides.get("selected_at", ""),
-            })
+            results.append(
+                {
+                    "file": filepath,
+                    "offset_ms": overrides.get("offset_ms", 0),
+                    "provider": overrides.get("provider"),
+                    "lrc_hash": overrides.get("lrc_hash", ""),
+                    "selected_at": overrides.get("selected_at", ""),
+                }
+            )
         return results
 
 
@@ -193,6 +197,7 @@ def apply_offset_to_lrc(lrc_text: str, offset_ms: int) -> str:
 
 # ── Interactive CLI helpers ────────────────────────────────────────
 
+
 def interactive_offset_adjust(audio_path: str) -> int:
     """Run an interactive offset adjustment session.
 
@@ -221,6 +226,7 @@ def interactive_offset_adjust(audio_path: str) -> int:
                 _get_audio_file,
                 _get_embedded_lyrics,
             )
+
             audio = _get_audio_file(str(p))
             if audio:
                 lyrics = _get_embedded_lyrics(audio)
@@ -240,6 +246,7 @@ def interactive_offset_adjust(audio_path: str) -> int:
 
     # Parse first few lines for display
     import re
+
     pat = re.compile(r"\[(\d{2}):(\d{2})(?:\.(\d{2,3}))?\]\s*(.*)")
     lines = []
     for line in lrc_text.split("\n")[:10]:
@@ -356,9 +363,7 @@ def list_candidates_for_selection(
         print()
 
     try:
-        choice = input(
-            f"  Elige un candidato (1-{len(candidates)}) o 'e' para cancelar: "
-        ).strip()
+        choice = input(f"  Elige un candidato (1-{len(candidates)}) o 'e' para cancelar: ").strip()
     except (EOFError, KeyboardInterrupt):
         print("\n  Cancelado.")
         return None
@@ -393,6 +398,7 @@ def save_selected_candidate(
 
 # ── CLI entry point ────────────────────────────────────────────────
 
+
 def run_lyrics_overrides(args: Any) -> int:
     """Dispatch lyrics-overrides subcommands."""
     cmd = getattr(args, "lyrics_overrides_cmd", None)
@@ -424,21 +430,21 @@ def run_lyrics_overrides(args: Any) -> int:
     if cmd == "select":
         # Search for lyrics and present candidates
         import asyncio
+
+        from otterrip_core.adapters.base import SongQuery
         from otterrip_core.lyrics import (
-            _build_query,
             _build_providers,
             _search_one,
         )
-        from otterrip_core.adapters.base import SongQuery
-        from otterrip_core.lyrics_bundle import LyricsBundle
 
         # Build query from audio file
         try:
-            from otterrip_core.lyrics_tool import _get_audio_file, _get_embedded_lyrics
-            from mutagen.mp3 import MP3
-            from mutagen.flac import FLAC
-            from mutagen.mp4 import MP4
             import re as _re
+
+            from mutagen.flac import FLAC
+            from mutagen.mp3 import MP3
+            from mutagen.mp4 import MP4
+            from otterrip_core.lyrics_tool import _get_audio_file
 
             audio = _get_audio_file(args.file)
             if audio is None:
@@ -486,9 +492,7 @@ def run_lyrics_overrides(args: Any) -> int:
         candidates = []
         for provider in providers:
             try:
-                bundles = asyncio.get_event_loop().run_until_complete(
-                    _search_one(provider, query, plain_ok=True)
-                )
+                bundles = asyncio.get_event_loop().run_until_complete(_search_one(provider, query, plain_ok=True))
                 for bundle in bundles:
                     # Get preview lines
                     preview_lines = []
@@ -505,15 +509,17 @@ def run_lyrics_overrides(args: Any) -> int:
                             if line.strip():
                                 preview_lines.append(line.strip())
 
-                    candidates.append({
-                        "provider": provider.name,
-                        "sync_level": "synced" if bundle.lrc else "plain",
-                        "title": bundle.title or title,
-                        "artist": bundle.artist or artist,
-                        "preview": "\n".join(preview_lines),
-                        "score": bundle.confidence or 0.0,
-                        "lrc_text": bundle.lrc or bundle.plain or "",
-                    })
+                    candidates.append(
+                        {
+                            "provider": provider.name,
+                            "sync_level": "synced" if bundle.lrc else "plain",
+                            "title": bundle.title or title,
+                            "artist": bundle.artist or artist,
+                            "preview": "\n".join(preview_lines),
+                            "score": bundle.confidence or 0.0,
+                            "lrc_text": bundle.lrc or bundle.plain or "",
+                        }
+                    )
             except Exception:
                 pass
 
@@ -533,6 +539,7 @@ def run_lyrics_overrides(args: Any) -> int:
             lrc_text = selected.get("lrc_text", "")
             if lrc_text:
                 from pathlib import Path
+
                 lrc_path = Path(args.file).with_suffix(".lrc")
                 lrc_path.write_text(lrc_text, encoding="utf-8")
                 print(f"  Letra guardada en: {lrc_path}")

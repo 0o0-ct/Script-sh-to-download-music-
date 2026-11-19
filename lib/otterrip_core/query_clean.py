@@ -4,6 +4,7 @@
 Strips common YouTube / streaming noise from titles and artists so that
 provider lookups (LRCLIB, Multi-Web) return better matches.
 """
+
 from __future__ import annotations
 
 import re
@@ -90,9 +91,7 @@ def normalize_unicode(value: str) -> str:
     if not value:
         return ""
     decomposed = unicodedata.normalize("NFKD", value)
-    stripped = "".join(
-        ch for ch in decomposed if not unicodedata.combining(ch)
-    )
+    stripped = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
     return stripped.casefold().strip()
 
 
@@ -246,9 +245,7 @@ def split_feat(title: str) -> tuple[str, str | None]:
     if m:
         return title[: m.start()].strip(), m.group(1).strip()
     # Fallback to standard form (no parentheses).
-    m = re.search(
-        r"\s+(?:feat\.?|ft\.?|featuring)\s+(.+?)\s*$", title, re.IGNORECASE
-    )
+    m = re.search(r"\s+(?:feat\.?|ft\.?|featuring)\s+(.+?)\s*$", title, re.IGNORECASE)
     if m:
         return title[: m.start()].strip(), m.group(1).strip()
     return title, None
@@ -360,7 +357,9 @@ def build_query_terms(
             logger = __import__("logging", fromlist=["getLogger"]).getLogger(__name__)
             logger.info(
                 "metadatos sospechosos '%s' → fallback filename: artist='%s', title='%s'",
-                artist, fn_artist, fn_title,
+                artist,
+                fn_artist,
+                fn_title,
             )
 
     # Strip repeated artist prefix and extract artist if available
@@ -385,12 +384,8 @@ def build_query_terms(
         # the string length, in which case we skip the slice).
         n_t = normalize_unicode(clean_t)
         n_prefix = normalize_unicode(clean_a + ":")
-        if (
-            n_t.startswith(n_prefix)
-            and len(n_t) == len(clean_t)
-            and len(n_prefix) == len(clean_a) + 1
-        ):
-            clean_t = clean_t[len(clean_a) + 1:].strip()
+        if n_t.startswith(n_prefix) and len(n_t) == len(clean_t) and len(n_prefix) == len(clean_a) + 1:
+            clean_t = clean_t[len(clean_a) + 1 :].strip()
 
     # Move feat. artists from title into artist field for better matching
     if feat_artist:

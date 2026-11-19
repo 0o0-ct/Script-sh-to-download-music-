@@ -15,6 +15,7 @@ Usage:
 Or use the convenience method:
     data = await limiter.fetch_json(url, params, headers)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -41,6 +42,7 @@ DEFAULT_HTTP_TIMEOUT: float = 10.0
 # ---------------------------------------------------------------------------
 # Response cache
 # ---------------------------------------------------------------------------
+
 
 class _ResponseCache:
     """Simple in-memory LRU-style cache keyed by URL + params hash."""
@@ -80,6 +82,7 @@ class _ResponseCache:
 # ---------------------------------------------------------------------------
 # Rate limiter
 # ---------------------------------------------------------------------------
+
 
 class MusicBrainzRateLimiter:
     """Async rate limiter for MusicBrainz API calls.
@@ -135,9 +138,7 @@ class MusicBrainzRateLimiter:
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create the shared HTTP session."""
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=self.http_timeout)
-            )
+            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.http_timeout))
             self._session_owned = True
         return self._session
 
@@ -175,18 +176,23 @@ class MusicBrainzRateLimiter:
                 ) as resp:
                     # Retry on 503 (rate limit) or server errors
                     if resp.status == 503 and attempt < self.max_retries - 1:
-                        wait = self.backoff_base * (2 ** attempt)
+                        wait = self.backoff_base * (2**attempt)
                         logger.warning(
                             "MusicBrainz 503 (rate limit), retrying in %.1fs (attempt %d/%d)",
-                            wait, attempt + 1, self.max_retries,
+                            wait,
+                            attempt + 1,
+                            self.max_retries,
                         )
                         await asyncio.sleep(wait)
                         continue
                     if resp.status >= 500 and attempt < self.max_retries - 1:
-                        wait = self.backoff_base * (2 ** attempt)
+                        wait = self.backoff_base * (2**attempt)
                         logger.warning(
                             "MusicBrainz %d, retrying in %.1fs (attempt %d/%d)",
-                            resp.status, wait, attempt + 1, self.max_retries,
+                            resp.status,
+                            wait,
+                            attempt + 1,
+                            self.max_retries,
                         )
                         await asyncio.sleep(wait)
                         continue
@@ -194,17 +200,21 @@ class MusicBrainzRateLimiter:
             except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
                 last_exc = exc
                 if attempt < self.max_retries - 1:
-                    wait = self.backoff_base * (2 ** attempt)
+                    wait = self.backoff_base * (2**attempt)
                     logger.warning(
                         "MusicBrainz request failed (%s), retrying in %.1fs (attempt %d/%d)",
-                        type(exc).__name__, wait, attempt + 1, self.max_retries,
+                        type(exc).__name__,
+                        wait,
+                        attempt + 1,
+                        self.max_retries,
                     )
                     await asyncio.sleep(wait)
                 continue
 
         logger.error(
             "MusicBrainz request failed after %d attempts: %s",
-            self.max_retries, last_exc,
+            self.max_retries,
+            last_exc,
         )
         return None
 
@@ -245,9 +255,7 @@ class MusicBrainzRateLimiter:
                 return None
 
             if resp.status != 200:
-                logger.warning(
-                    "MusicBrainz returned %d for %s", resp.status, url
-                )
+                logger.warning("MusicBrainz returned %d for %s", resp.status, url)
                 return None
 
             try:

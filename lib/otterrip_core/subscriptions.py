@@ -6,6 +6,7 @@ Integrates with systemd user timers for periodic checks.
 
 Uses StateDB for persistent storage of subscription data.
 """
+
 from __future__ import annotations
 
 import json
@@ -15,7 +16,6 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 from otterrip_core import state_db
 
@@ -108,10 +108,12 @@ class SubscriptionManager:
 
                 # Update last check time
                 self.db.subscription_update_check(sub_url)
-                checked.append({
-                    "url": sub_url,
-                    "new": new_count,
-                })
+                checked.append(
+                    {
+                        "url": sub_url,
+                        "new": new_count,
+                    }
+                )
 
                 # Download new songs if requested
                 if download and new_count > 0:
@@ -121,25 +123,31 @@ class SubscriptionManager:
                             try:
                                 self._download_song(song_url)
                             except Exception as exc:
-                                errors.append({
-                                    "url": song_url,
-                                    "error": str(exc),
-                                })
+                                errors.append(
+                                    {
+                                        "url": song_url,
+                                        "error": str(exc),
+                                    }
+                                )
 
             except Exception as exc:
-                errors.append({
-                    "url": sub_url,
-                    "error": str(exc),
-                })
+                errors.append(
+                    {
+                        "url": sub_url,
+                        "error": str(exc),
+                    }
+                )
 
             # Update last check even on error to avoid spam
             self.db.subscription_update_check(sub_url)
             if sub_url not in [c["url"] for c in checked]:
-                checked.append({
-                    "url": sub_url,
-                    "new": 0,
-                    "error": errors[-1]["error"] if errors else None,
-                })
+                checked.append(
+                    {
+                        "url": sub_url,
+                        "new": 0,
+                        "error": errors[-1]["error"] if errors else None,
+                    }
+                )
 
         return {
             "checked": checked,
@@ -162,8 +170,15 @@ class SubscriptionManager:
         except Exception:
             # Fallback: use subprocess to call yt-dlp directly
             subprocess.run(
-                ["yt-dlp", "-x", "--audio-format", "mp3", "-o",
-                 os.path.join(dest, "%(artist)s - %(title)s.%(ext)s"), url],
+                [
+                    "yt-dlp",
+                    "-x",
+                    "--audio-format",
+                    "mp3",
+                    "-o",
+                    os.path.join(dest, "%(artist)s - %(title)s.%(ext)s"),
+                    url,
+                ],
                 timeout=300,
             )
 
@@ -242,17 +257,20 @@ WantedBy=timers.target
             if enable:
                 subprocess.run(
                     ["systemctl", "--user", "daemon-reload"],
-                    check=True, timeout=10,
+                    check=True,
+                    timeout=10,
                 )
                 subprocess.run(
                     ["systemctl", "--user", "enable", "--now", "otterrip-subscriptions.timer"],
-                    check=True, timeout=10,
+                    check=True,
+                    timeout=10,
                 )
                 result["enabled"] = True
             else:
                 subprocess.run(
                     ["systemctl", "--user", "disable", "--now", "otterrip-subscriptions.timer"],
-                    check=True, timeout=10,
+                    check=True,
+                    timeout=10,
                 )
                 result["enabled"] = False
         except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):

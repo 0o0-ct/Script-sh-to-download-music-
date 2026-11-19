@@ -16,6 +16,7 @@ Features:
 Usage:
     py_core download engine <url> --dest <dir> [options]
 """
+
 from __future__ import annotations
 
 import json
@@ -25,17 +26,17 @@ import re
 import sys
 import threading
 import time
-import traceback
-from concurrent.futures import ThreadPoolExecutor, Future, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger("otterrip_core.download_engine")
 
 # Try to import yt-dlp
 try:
     import yt_dlp
+
     HAS_YT_DLP = True
 except ImportError:
     HAS_YT_DLP = False
@@ -43,9 +44,11 @@ except ImportError:
 
 # ─── Data classes ───────────────────────────────────────────────────────────
 
+
 @dataclass
 class DownloadEntry:
     """Represents a single download entry from a playlist."""
+
     url: str
     index: int
     title: str = ""
@@ -59,6 +62,7 @@ class DownloadEntry:
 @dataclass
 class DownloadResult:
     """Result of a single download attempt."""
+
     entry: DownloadEntry
     status: str  # "ok", "error", "skipped", "cancelled"
     filename: str = ""
@@ -70,6 +74,7 @@ class DownloadResult:
 @dataclass
 class DownloadSummary:
     """Summary of a download session."""
+
     total: int = 0
     ok: int = 0
     errors: int = 0
@@ -129,6 +134,7 @@ def classify_error(error_msg: str) -> tuple[str, bool]:
 
 # ─── Progress reporting ─────────────────────────────────────────────────────
 
+
 def _format_speed(bytes_per_sec: float) -> str:
     """Format bytes/second to human-readable speed."""
     if bytes_per_sec < 1024:
@@ -160,6 +166,7 @@ def _emit_json(event: dict) -> None:
 
 
 # ─── Download Engine ────────────────────────────────────────────────────────
+
 
 class DownloadEngine:
     """Main download engine using yt-dlp Python API.
@@ -256,31 +263,21 @@ class DownloadEngine:
                     opts["audioquality"] = self.quality
                     # For postprocessor quality
                     if self.format_profile == "mp3":
-                        opts.setdefault("postprocessor_args", {})["ffmpeg"] = {
-                            "-b:a": self.quality
-                        }
+                        opts.setdefault("postprocessor_args", {})["ffmpeg"] = {"-b:a": self.quality}
                     elif self.format_profile == "m4a":
-                        opts.setdefault("postprocessor_args", {})["ffmpeg"] = {
-                            "-b:a": self.quality
-                        }
+                        opts.setdefault("postprocessor_args", {})["ffmpeg"] = {"-b:a": self.quality}
                     elif self.format_profile == "opus":
                         opts.setdefault("postprocessor_args", {})["ffmpeg"] = {
                             "-codec:a": "libopus",
-                            "-b:a": self.quality
+                            "-b:a": self.quality,
                         }
             elif self.format_profile == "flac":
                 opts["x"] = True
                 opts["audioformat"] = "flac"
                 if self.quality == "24bit":
-                    opts.setdefault("postprocessor_args", {})["ffmpeg"] = {
-                        "-sample_fmt": "s24",
-                        "-ar": "96000"
-                    }
+                    opts.setdefault("postprocessor_args", {})["ffmpeg"] = {"-sample_fmt": "s24", "-ar": "96000"}
                 else:
-                    opts.setdefault("postprocessor_args", {})["ffmpeg"] = {
-                        "-sample_fmt": "s16",
-                        "-ar": "44100"
-                    }
+                    opts.setdefault("postprocessor_args", {})["ffmpeg"] = {"-sample_fmt": "s16", "-ar": "44100"}
             elif self.format_profile == "wav":
                 opts["x"] = True
                 opts["audioformat"] = "wav"
@@ -388,18 +385,22 @@ class DownloadEngine:
                         entries.append(entry)
 
         except Exception as exc:
-            _emit_json({
-                "type": "error",
-                "error": f"Error extrayendo playlist: {exc}",
-                "retryable": True,
-            })
+            _emit_json(
+                {
+                    "type": "error",
+                    "error": f"Error extrayendo playlist: {exc}",
+                    "retryable": True,
+                }
+            )
 
         self._total_entries = len(entries)
-        _emit_json({
-            "type": "playlist_extracted",
-            "total": len(entries),
-            "title": info.get("title", "") if "info" in dir() else "",
-        })
+        _emit_json(
+            {
+                "type": "playlist_extracted",
+                "total": len(entries),
+                "title": info.get("title", "") if "info" in dir() else "",
+            }
+        )
 
         return entries
 
@@ -420,19 +421,21 @@ class DownloadEngine:
 
         if status == "downloading":
             percent = (downloaded / total * 100) if total > 0 else 0
-            _emit_json({
-                "type": "progress",
-                "index": index,
-                "title": title,
-                "percent": round(percent, 1),
-                "speed": _format_speed(speed),
-                "speed_bytes": speed,
-                "eta": _format_eta(eta),
-                "eta_seconds": eta,
-                "filename": os.path.basename(filename) if filename else "",
-                "downloaded_bytes": downloaded,
-                "total_bytes": total,
-            })
+            _emit_json(
+                {
+                    "type": "progress",
+                    "index": index,
+                    "title": title,
+                    "percent": round(percent, 1),
+                    "speed": _format_speed(speed),
+                    "speed_bytes": speed,
+                    "eta": _format_eta(eta),
+                    "eta_seconds": eta,
+                    "filename": os.path.basename(filename) if filename else "",
+                    "downloaded_bytes": downloaded,
+                    "total_bytes": total,
+                }
+            )
 
             # Update global progress
             with self._global_lock:
@@ -448,12 +451,14 @@ class DownloadEngine:
             # Emit global progress
             if self._total_entries > 0:
                 global_percent = (self._completed / self._total_entries) * 100
-                _emit_json({
-                    "type": "global_progress",
-                    "completed": self._completed,
-                    "total": self._total_entries,
-                    "percent": round(global_percent, 1),
-                })
+                _emit_json(
+                    {
+                        "type": "global_progress",
+                        "completed": self._completed,
+                        "total": self._total_entries,
+                        "percent": round(global_percent, 1),
+                    }
+                )
 
     def _postprocessor_hook(self, d: dict) -> None:
         """Callback for yt-dlp postprocessor_hooks.
@@ -465,12 +470,14 @@ class DownloadEngine:
 
         if key == "FFmpegExtractAudio":
             status = d.get("status", "finished")
-            _emit_json({
-                "type": "postprocessor",
-                "key": key,
-                "status": status,
-                "filename": os.path.basename(filename) if filename else "",
-            })
+            _emit_json(
+                {
+                    "type": "postprocessor",
+                    "key": key,
+                    "status": status,
+                    "filename": os.path.basename(filename) if filename else "",
+                }
+            )
 
     def _worker_download(self, entry: DownloadEntry, worker_id: int) -> DownloadResult:
         """Download a single entry using yt-dlp API.
@@ -532,13 +539,15 @@ class DownloadEngine:
                     )
 
                     # Emit finished event
-                    _emit_json({
-                        "type": "finished",
-                        "index": entry.index,
-                        "title": entry.title,
-                        "status": "ok",
-                        "filename": os.path.basename(filename) if filename else "",
-                    })
+                    _emit_json(
+                        {
+                            "type": "finished",
+                            "index": entry.index,
+                            "title": entry.title,
+                            "status": "ok",
+                            "filename": os.path.basename(filename) if filename else "",
+                        }
+                    )
 
                     return result
 
@@ -547,15 +556,17 @@ class DownloadEngine:
                 last_error = error_msg
                 category, retryable = classify_error(error_msg)
 
-                _emit_json({
-                    "type": "error",
-                    "index": entry.index,
-                    "title": entry.title,
-                    "error": error_msg[:200],
-                    "category": category,
-                    "retryable": retryable,
-                    "attempt": attempt,
-                })
+                _emit_json(
+                    {
+                        "type": "error",
+                        "index": entry.index,
+                        "title": entry.title,
+                        "error": error_msg[:200],
+                        "category": category,
+                        "retryable": retryable,
+                        "attempt": attempt,
+                    }
+                )
 
                 if not retryable:
                     break  # Don't retry permanent errors
@@ -575,13 +586,15 @@ class DownloadEngine:
             attempts=max_attempts,
         )
 
-        _emit_json({
-            "type": "finished",
-            "index": entry.index,
-            "title": entry.title,
-            "status": "error",
-            "error": last_error[:200],
-        })
+        _emit_json(
+            {
+                "type": "finished",
+                "index": entry.index,
+                "title": entry.title,
+                "status": "error",
+                "error": last_error[:200],
+            }
+        )
 
         return result
 
@@ -620,24 +633,28 @@ class DownloadEngine:
 
         if not entries:
             summary = DownloadSummary(total=0, duration=time.time() - start_time)
-            _emit_json({
-                "type": "summary",
-                "total": 0,
-                "ok": 0,
-                "errors": 0,
-                "skipped": 0,
-                "cancelled": 0,
-                "duration": round(summary.duration, 1),
-            })
+            _emit_json(
+                {
+                    "type": "summary",
+                    "total": 0,
+                    "ok": 0,
+                    "errors": 0,
+                    "skipped": 0,
+                    "cancelled": 0,
+                    "duration": round(summary.duration, 1),
+                }
+            )
             return summary
 
         self._total_entries = len(entries)
-        _emit_json({
-            "type": "download_start",
-            "total": len(entries),
-            "workers": self.workers,
-            "dest": str(self.dest),
-        })
+        _emit_json(
+            {
+                "type": "download_start",
+                "total": len(entries),
+                "workers": self.workers,
+                "dest": str(self.dest),
+            }
+        )
 
         # Download using thread pool
         results: List[DownloadResult] = []
@@ -687,20 +704,23 @@ class DownloadEngine:
         )
 
         # Emit summary
-        _emit_json({
-            "type": "summary",
-            "total": summary.total,
-            "ok": summary.ok,
-            "errors": summary.errors,
-            "skipped": summary.skipped,
-            "cancelled": summary.cancelled,
-            "duration": round(summary.duration, 1),
-        })
+        _emit_json(
+            {
+                "type": "summary",
+                "total": summary.total,
+                "ok": summary.ok,
+                "errors": summary.errors,
+                "skipped": summary.skipped,
+                "cancelled": summary.cancelled,
+                "duration": round(summary.duration, 1),
+            }
+        )
 
         return summary
 
 
 # ─── CLI entry point ────────────────────────────────────────────────────────
+
 
 def run_download_engine(args) -> int:
     """CLI entry point for download engine.
@@ -736,10 +756,12 @@ def run_download_engine(args) -> int:
         engine.cancel_all()
         return 130
     except Exception as exc:
-        _emit_json({
-            "type": "error",
-            "error": f"Error en el motor de descargas: {exc}",
-        })
+        _emit_json(
+            {
+                "type": "error",
+                "error": f"Error en el motor de descargas: {exc}",
+            }
+        )
         return 1
 
     if summary.errors > 0 and summary.ok == 0:

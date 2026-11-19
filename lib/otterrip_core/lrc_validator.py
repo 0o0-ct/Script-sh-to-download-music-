@@ -6,22 +6,18 @@ Expands multi-timestamp lines, sorts, enforces monotonicity, strips
 advertising / credit lines, preserves [ar:]/[ti:] headers, and
 normalises every timestamp to [mm:ss.xx].
 """
+
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
 
-
 _HEADER_RE = re.compile(
     r"^\[(?:ti|ar|al|au|by|offset|length|re|ve)\:[^\]]*\]\s*$",
     re.IGNORECASE,
 )
-_TIMED_RE = re.compile(
-    r"^\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]\s*(.*)$"
-)
-_ALL_TAGS_RE = re.compile(
-    r"\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]"
-)
+_TIMED_RE = re.compile(r"^\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]\s*(.*)$")
+_ALL_TAGS_RE = re.compile(r"\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]")
 
 _AD_PATTERNS = (
     r"letra\s*y\s*música",
@@ -49,9 +45,9 @@ class LrcValidationResult:
 
     valid: bool
     entries: list[tuple[int, str]]  # (ms, text), sorted, monotonic
-    headers: dict[str, str]         # [ti:], [ar:] etc.
-    plain: str                      # timestamp-free text
-    reason: str = ""                # human-readable failure reason
+    headers: dict[str, str]  # [ti:], [ar:] etc.
+    plain: str  # timestamp-free text
+    reason: str = ""  # human-readable failure reason
     warnings: list[str] = field(default_factory=list)
 
 
@@ -116,9 +112,7 @@ def validate_and_normalise_lrc(
 
     entries = parse_lrc(body)
 
-    non_empty_lines = [
-        ln for ln in body.splitlines() if ln.strip()
-    ]
+    non_empty_lines = [ln for ln in body.splitlines() if ln.strip()]
     if non_empty_lines:
         ratio = len(entries) / len(non_empty_lines)
         if ratio < _MIN_TIMESTAMP_RATIO:
@@ -127,10 +121,7 @@ def validate_and_normalise_lrc(
                 entries=[],
                 headers=headers,
                 plain=body.strip(),
-                reason=(
-                    f"solo {ratio:.0%} de líneas con timestamp "
-                    f"(mínimo {_MIN_TIMESTAMP_RATIO:.0%})"
-                ),
+                reason=(f"solo {ratio:.0%} de líneas con timestamp (mínimo {_MIN_TIMESTAMP_RATIO:.0%})"),
                 warnings=warnings,
             )
 
@@ -168,18 +159,13 @@ def validate_and_normalise_lrc(
     total_lines = len(deduped)
     empty_lines = sum(1 for _, txt in deduped if not txt.strip())
     if total_lines > 0 and (empty_lines / total_lines) > 0.30:
-        warnings.append(
-            f"exceso de líneas vacías: {empty_lines}/{total_lines} "
-            f"({empty_lines/total_lines:.0%})"
-        )
+        warnings.append(f"exceso de líneas vacías: {empty_lines}/{total_lines} ({empty_lines / total_lines:.0%})")
 
     monotonic: list[tuple[int, str]] = []
     last_ms = -1
     for ms, txt in deduped:
         if ms < last_ms:
-            warnings.append(
-                f"timestamp no monotónico corregido: {ms}ms < {last_ms}ms"
-            )
+            warnings.append(f"timestamp no monotónico corregido: {ms}ms < {last_ms}ms")
             ms = last_ms
         monotonic.append((ms, txt))
         last_ms = ms
@@ -212,10 +198,7 @@ def validate_and_normalise_lrc(
 
 
 def normalise_lrc(entries: list[tuple[int, str]]) -> str:
-    lines = [
-        _format_ts(ms) + (" " + txt if txt else "")
-        for ms, txt in entries
-    ]
+    lines = [_format_ts(ms) + (" " + txt if txt else "") for ms, txt in entries]
     return "\n".join(lines)
 
 

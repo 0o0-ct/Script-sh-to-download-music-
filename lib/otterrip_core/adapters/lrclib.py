@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """LRCLIB provider adapter — robust, validated, retries with backoff."""
+
 from __future__ import annotations
 
 import asyncio
 from typing import Optional
 
 import aiohttp
-
+from otterrip_core.adapters.base import BaseProvider, SongQuery
+from otterrip_core.lrc_validator import normalise_lrc, validate_and_normalise_lrc
 from otterrip_core.lyrics_bundle import LyricsBundle
-from otterrip_core.lrc_validator import validate_and_normalise_lrc, normalise_lrc
 from otterrip_core.query_clean import (
     build_query_terms,
-    split_feat,
     normalize_unicode,
+    split_feat,
 )
-from otterrip_core.adapters.base import BaseProvider, SongQuery
 
 
 class LrclibProvider(BaseProvider):
@@ -51,14 +51,15 @@ class LrclibProvider(BaseProvider):
         terms = build_query_terms(query.title, query.artist, query.album)
         feat_title, feat_artist = split_feat(query.title)
         if feat_artist:
-            terms = build_query_terms(
-                query.title, query.artist, query.album, feat_artist
-            )
+            terms = build_query_terms(query.title, query.artist, query.album, feat_artist)
 
         # 1) Exact match with real audio duration.
         exact = await self._fetch_exact(
-            terms["artist"], terms["title"], terms["album"],
-            query.duration, query.isrc,
+            terms["artist"],
+            terms["title"],
+            terms["album"],
+            query.duration,
+            query.isrc,
         )
         if exact:
             bundles.append(exact)
@@ -67,10 +68,14 @@ class LrclibProvider(BaseProvider):
 
         # 2) Filtered search — tolerant matching on track + artist.
         if not bundles or not bundles[0].has_sync:
-            bundles.extend(await self._fetch_search(
-                terms["artist"], terms["title"],
-                query.duration, query.isrc,
-            ))
+            bundles.extend(
+                await self._fetch_search(
+                    terms["artist"],
+                    terms["title"],
+                    query.duration,
+                    query.isrc,
+                )
+            )
         if bundles and bundles[0].has_sync:
             bundles.sort(key=self._rank_key(query.duration))
             return bundles
@@ -81,10 +86,15 @@ class LrclibProvider(BaseProvider):
         if not bundles or not bundles[0].has_sync:
             q_text = terms.get("search") or f"{query.artist} {query.title}".strip()
             if q_text:
-                bundles.extend(await self._fetch_search(
-                    terms["artist"], terms["title"],
-                    None, query.isrc, q_text=q_text,
-                ))
+                bundles.extend(
+                    await self._fetch_search(
+                        terms["artist"],
+                        terms["title"],
+                        None,
+                        query.isrc,
+                        q_text=q_text,
+                    )
+                )
         if bundles and bundles[0].has_sync:
             bundles.sort(key=self._rank_key(query.duration))
             return bundles
@@ -92,9 +102,14 @@ class LrclibProvider(BaseProvider):
         # 4) Title-only search when the artist match failed (e.g. the tag
         #    artist is the YouTube channel, not the real artist).
         if not bundles:
-            bundles.extend(await self._fetch_search(
-                "", terms["title"], None, query.isrc,
-            ))
+            bundles.extend(
+                await self._fetch_search(
+                    "",
+                    terms["title"],
+                    None,
+                    query.isrc,
+                )
+            )
 
         bundles.sort(key=self._rank_key(query.duration))
         return bundles
@@ -113,7 +128,8 @@ class LrclibProvider(BaseProvider):
         """GET JSON with retries.  Distinguishes 404 from retriable errors."""
         try:
             async with session.get(
-                url, params=params,
+                url,
+                params=params,
                 headers={"User-Agent": self.user_agent},
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
@@ -123,9 +139,7 @@ class LrclibProvider(BaseProvider):
                     if attempt < self.max_retries:
                         wait = self.base_backoff ** (attempt + 1)
                         await asyncio.sleep(wait)
-                        return await self._request_json(
-                            session, url, params, attempt + 1
-                        )
+                        return await self._request_json(session, url, params, attempt + 1)
                     return None  # exhausted retries
                 if resp.status != 200:
                     return None
@@ -134,9 +148,7 @@ class LrclibProvider(BaseProvider):
             if attempt < self.max_retries:
                 wait = self.base_backoff ** (attempt + 1)
                 await asyncio.sleep(wait)
-                return await self._request_json(
-                    session, url, params, attempt + 1
-                )
+                return await self._request_json(session, url, params, attempt + 1)
             return None
 
     async def _fetch_exact(
@@ -161,9 +173,7 @@ class LrclibProvider(BaseProvider):
             params["isrc"] = isrc
 
         async with aiohttp.ClientSession() as session:
-            data = await self._request_json(
-                session, f"{self.host}/api/get", params
-            )
+            data = await self._request_json(session, f"{self.host}/api/get", params)
         if not data:
             return None
         return self._build_bundle(data, query_duration_s=duration_s)
@@ -199,9 +209,7 @@ class LrclibProvider(BaseProvider):
                 params["isrc"] = isrc
 
         async with aiohttp.ClientSession() as session:
-            data = await self._request_json(
-                session, f"{self.host}/api/search", params
-            )
+            data = await self._request_json(session, f"{self.host}/api/search", params)
         if not isinstance(data, list) or not data:
             return []
 
@@ -209,9 +217,7 @@ class LrclibProvider(BaseProvider):
         title_norm = normalize_unicode(title)
         scored = sorted(
             data,
-            key=lambda row: self._row_score(
-                row, artist_norm, title_norm, duration_s
-            ),
+            key=lambda row: self._row_score(row, artist_norm, title_norm, duration_s),
             reverse=True,
         )
         bundles: list[LyricsBundle] = []
@@ -236,9 +242,7 @@ class LrclibProvider(BaseProvider):
         """Rank a search row: exact artist/title beat partial matches."""
         score = 0.0
         row_artist = normalize_unicode(row.get("artistName") or "")
-        row_title = normalize_unicode(
-            row.get("trackName") or row.get("name") or ""
-        )
+        row_title = normalize_unicode(row.get("trackName") or row.get("name") or "")
         if artist_norm:
             if row_artist == artist_norm:
                 score += 2.0
@@ -285,18 +289,14 @@ class LrclibProvider(BaseProvider):
             )
 
         duration_ms = self._to_ms(data.get("duration"))
-        audio_duration_ms = (
-            int(round(query_duration_s * 1000)) if query_duration_s else None
-        )
+        audio_duration_ms = int(round(query_duration_s * 1000)) if query_duration_s else None
 
         warnings: list[str] = []
 
         if audio_duration_ms is not None and duration_ms is not None:
             delta = abs(audio_duration_ms - duration_ms)
             if delta > 3000:
-                warnings.append(
-                    f"desfase de duración {delta} ms entre audio y fuente"
-                )
+                warnings.append(f"desfase de duración {delta} ms entre audio y fuente")
 
         if synced:
             validation = validate_and_normalise_lrc(
@@ -317,9 +317,7 @@ class LrclibProvider(BaseProvider):
                     warnings=warnings + validation.warnings,
                 )
             else:
-                warnings.append(
-                    f"letra sincronizada rechazada: {validation.reason}"
-                )
+                warnings.append(f"letra sincronizada rechazada: {validation.reason}")
 
         if plain:
             return LyricsBundle(
@@ -402,12 +400,12 @@ class LrclibProvider(BaseProvider):
             has_sync = 1 if bundle.has_sync else 0
             dur_delta = bundle.duration_delta_ms() or 10_000_000
             return (-has_sync, dur_delta, -bundle.confidence)
+
         return key
 
 
 # Backward-compatible re-export for existing tests.
 from otterrip_core.lrc_validator import parse_lrc as _parse_lrc  # noqa: E402
-
 
 # ── Backward-compatible helpers (legacy tests) ──────────────────────
 
@@ -434,6 +432,7 @@ def _fuzzy_match(a: str, b: str) -> float:
 def _parse_lrc_legacy(text: str) -> list[tuple[float, str]]:
     """Parse LRC text into [(seconds_float, text), ...] (legacy format)."""
     from otterrip_core.lrc_validator import parse_lrc as _parse_ms
+
     entries_ms = _parse_ms(text)
     return [(ms / 1000.0, txt) for ms, txt in entries_ms]
 

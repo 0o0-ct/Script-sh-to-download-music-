@@ -9,6 +9,7 @@ Supports:
   - Missing covers detection with --missing-covers
   - Missing lyrics detection with --missing-lyrics
 """
+
 from __future__ import annotations
 
 import json
@@ -17,9 +18,10 @@ from pathlib import Path
 
 try:
     import mutagen
-    from mutagen.mp3 import MP3
     from mutagen.flac import FLAC
+    from mutagen.mp3 import MP3
     from mutagen.mp4 import MP4
+
     HAS_MUTAGEN = True
 except ImportError:
     HAS_MUTAGEN = False
@@ -96,11 +98,7 @@ def _find_acoustic_duplicates(infos: list[dict]) -> list[dict]:
             continue
 
     # Return groups with more than one file
-    return [
-        {"fingerprint": fp, "files": files}
-        for fp, files in fp_map.items()
-        if len(files) > 1
-    ]
+    return [{"fingerprint": fp, "files": files} for fp, files in fp_map.items() if len(files) > 1]
 
 
 def _find_incomplete_albums(infos: list[dict]) -> list[dict]:
@@ -143,13 +141,15 @@ def _find_incomplete_albums(infos: list[dict]) -> list[dict]:
         if totals and nums:
             expected = max(totals)
             if len(nums) < expected:
-                incomplete.append({
-                    "album": album,
-                    "expected": expected,
-                    "found": len(nums),
-                    "missing": expected - len(nums),
-                    "files": tracks,
-                })
+                incomplete.append(
+                    {
+                        "album": album,
+                        "expected": expected,
+                        "found": len(nums),
+                        "missing": expected - len(nums),
+                        "files": tracks,
+                    }
+                )
 
     return incomplete
 
@@ -166,10 +166,7 @@ def run_library(args) -> int:
         print(f"Ruta no encontrada: {args.path}")
         return 1
 
-    files = sorted(
-        f for f in target.rglob("*")
-        if f.is_file() and f.suffix.lower() in AUDIO_EXTS
-    )
+    files = sorted(f for f in target.rglob("*") if f.is_file() and f.suffix.lower() in AUDIO_EXTS)
 
     if not files:
         print("No se encontraron archivos de audio.")

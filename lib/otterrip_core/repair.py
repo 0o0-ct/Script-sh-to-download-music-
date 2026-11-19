@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Repair metadata (repair command)."""
+
 from __future__ import annotations
 
 import re
@@ -8,10 +9,10 @@ from pathlib import Path
 
 from otterrip_core.fix_metadata import (
     HAS_MUTAGEN,
+    _clean_title,
     _get_audio_file,
     _get_tags,
     _set_tags,
-    _clean_title,
 )
 
 
@@ -34,10 +35,7 @@ def run_repair(args) -> int:
     if target.is_file():
         files = [target]
     else:
-        files = sorted(
-            f for f in target.rglob("*")
-            if f.is_file() and f.suffix.lower() in audio_exts
-        )
+        files = sorted(f for f in target.rglob("*") if f.is_file() and f.suffix.lower() in audio_exts)
 
     if not files:
         print("No se encontraron archivos de audio.")

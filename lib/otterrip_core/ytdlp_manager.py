@@ -8,16 +8,15 @@ for rollback.
 
 State file: ~/.config/otterrip/ytdlp_state.json
 """
+
 from __future__ import annotations
 
 import json
 import os
-import platform
 import re
 import shutil
 import subprocess
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -63,6 +62,7 @@ def get_version() -> Optional[str]:
     # Try Python package
     try:
         import yt_dlp
+
         return getattr(yt_dlp, "__version__", None)
     except ImportError:
         pass
@@ -78,13 +78,10 @@ def get_latest_version() -> Optional[str]:
     """
     # Try PyPI JSON API
     try:
-        import urllib.request
         import urllib.error
+        import urllib.request
 
-        req = urllib.request.Request(
-            "https://pypi.org/pypi/yt-dlp/json",
-            headers={"User-Agent": "OtterRip/7.7.0"}
-        )
+        req = urllib.request.Request("https://pypi.org/pypi/yt-dlp/json", headers={"User-Agent": "OtterRip/7.7.0"})
         with urllib.request.urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode("utf-8"))
             return data.get("info", {}).get("version")
@@ -93,10 +90,7 @@ def get_latest_version() -> Optional[str]:
 
     # Fallback: pip index versions
     try:
-        result = subprocess.run(
-            ["pip", "index", "versions", "yt-dlp"],
-            capture_output=True, text=True, timeout=15
-        )
+        result = subprocess.run(["pip", "index", "versions", "yt-dlp"], capture_output=True, text=True, timeout=15)
         if result.returncode == 0:
             # Output: "yt-dlp (<version>)"
             match = re.search(r"yt-dlp \(([^)]+)\)", result.stdout)
@@ -221,7 +215,7 @@ def update(backup: bool = True) -> dict:
     except subprocess.TimeoutExpired:
         result["error"] = "Timeout durante la actualización"
     except FileNotFoundError:
-        result["error"] = f"pip no encontrado en el PATH"
+        result["error"] = "pip no encontrado en el PATH"
 
     return result
 
@@ -274,11 +268,9 @@ def rollback() -> dict:
 
 def _find_pip() -> Optional[str]:
     """Find pip executable, preferring the one in the current Python environment."""
-    # Try to find pip associated with current Python
-    python = sys.executable if 'sys' in globals() else None
-    if python:
-        import sys as _sys
-        python = _sys.executable
+    import sys as _sys
+
+    python = _sys.executable
 
     # Check common pip locations
     for pip_name in ["pip", "pip3", "pip-3.11", "pip-3.12"]:
@@ -288,12 +280,14 @@ def _find_pip() -> Optional[str]:
 
     # Try python -m pip
     if python:
-        result = subprocess.run(
-            [python, "-m", "pip", "--version"],
-            capture_output=True, text=True, timeout=10
-        )
-        if result.returncode == 0:
-            return f"{python} -m pip"
+        try:
+            result = subprocess.run(
+                [python, "-m", "pip", "--version"], capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                return f"{python} -m pip"
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
 
     return None
 
@@ -316,10 +310,7 @@ def ensure_ytdlp(min_version: str = "2024.02.01") -> bool:
         pip_cmd = _find_pip()
         if pip_cmd:
             try:
-                subprocess.run(
-                    [pip_cmd, "install", "yt-dlp"],
-                    capture_output=True, text=True, timeout=300
-                )
+                subprocess.run([pip_cmd, "install", "yt-dlp"], capture_output=True, text=True, timeout=300)
                 return get_version() is not None
             except (subprocess.TimeoutExpired, FileNotFoundError):
                 pass
